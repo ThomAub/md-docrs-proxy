@@ -81,8 +81,29 @@ Memory protocol notes in the zigflare [`doc/memory.md`](https://github.com/mattz
 
 ## Comparing with Rust WASM
 
-Next step is adding a `wasm32-unknown-unknown` target to the Rust crate that exposes the same `resolve_url` surface. We can then compare:
+The Rust equivalent lives at [`../rust-wasm/`](../rust-wasm/README.md). It exports
+the same `alloc` / `free` / `resolve_url` symbols with byte-for-byte identical
+signatures, so the Worker at `src/index.ts` can swap between the two by changing
+a single import path.
 
-- `.wasm` size (Rust with `panic=abort` + LTO + `wasm-opt` vs. Zig `ReleaseSmall` + `strip`).
-- Instantiation + call latency in a Worker.
+```sh
+# Minimal parity build — matches this Zig wasm surface 1:1.
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-wasm --no-default-features
+cp ../target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm \
+   src/md_docrs.wasm   # drop-in replacement for the Zig artifact
+
+# Full pipeline build — also exports `render_markdown` (JSON → Markdown).
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-wasm
+```
+
+What we're comparing:
+
+- `.wasm` size (Zig `ReleaseSmall` + `strip` vs. Rust `opt-level=z` + fat LTO + `strip`).
+- Instantiation + per-call latency in a Worker.
 - Cold-start cost (wrangler measures this).
+
+The Rust README has the current byte counts. Porting `render_markdown` to
+Zig is the interesting follow-up — that's where serde_json / rustdoc-types
+vs. `std.json` + hand-written types becomes a real apples-to-apples test.

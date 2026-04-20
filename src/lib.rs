@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod error;
+#[cfg(feature = "http")]
 pub mod fetch;
 pub mod render;
 pub mod resolve;
@@ -10,6 +11,7 @@ pub mod spec;
 pub use error::{Error, Result};
 pub use spec::ItemSpec;
 
+#[cfg(feature = "http")]
 use std::sync::Arc;
 
 /// High-level entry point: take a parsed `ItemSpec`, return rendered Markdown.
@@ -21,6 +23,7 @@ use std::sync::Arc;
 /// # Errors
 /// Forwards errors from `Fetcher::fetch` (network / docs.rs / decode failures)
 /// and `resolve::resolve` (`Error::NotFound` when the path does not match).
+#[cfg(feature = "http")]
 pub async fn render_spec(
     spec: &ItemSpec,
     fetcher: &fetch::Fetcher,
@@ -31,6 +34,7 @@ pub async fn render_spec(
     Ok(render::render(&krate, &resolved, spec))
 }
 
+#[cfg(feature = "http")]
 async fn load_crate(
     spec: &ItemSpec,
     fetcher: &fetch::Fetcher,

@@ -49,6 +49,32 @@ Status codes: 404 item not found, 400 bad spec, 502 upstream/decode error.
 - v0 does not render trait impls, blanket impls, or source links.
 - Glob re-exports into external crates (e.g. `clap::Parser` from `clap_builder`) are not followed.
 
+## WebAssembly builds
+
+Two same-ABI WASM modules live alongside the Rust library:
+
+- [`rust-wasm/`](rust-wasm/README.md) — `wasm32-unknown-unknown` build of
+  the pure pipeline (spec parse + resolve + render). Exports `alloc`,
+  `free`, `resolve_url`, and optionally `render_markdown`.
+- [`zig/`](zig/README.md) — Zig 0.16 port of the same surface (`resolve_url`
+  parity today; `render_markdown` is a follow-up). Ships a Cloudflare Worker
+  wrapper that can load either artifact unchanged.
+
+Build the Rust wasm:
+
+```sh
+# Minimal (resolve_url only — matches current Zig surface).
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-wasm --no-default-features
+# Full (adds render_markdown, brings in serde_json + rustdoc-types).
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-wasm
+```
+
+The root crate's HTTP / server / CLI bits are gated behind `http`, `server`,
+and `cli` features (all on by default), so the pure pipeline compiles for
+`wasm32` without reqwest/tokio/axum/zstd.
+
 ## Logging
 
 ```sh

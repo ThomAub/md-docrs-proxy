@@ -1,3 +1,7 @@
 /target
-zig/zig-out/
-zig/.zig-cache/
+zig/lib/zig-out/
+zig/lib/.zig-cache/
+zig/node_modules/
+zig/.wrangler/
+zig/worker-configuration.d.ts
+zig/src/md_docrs.wasm

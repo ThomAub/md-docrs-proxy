@@ -1,17 +1,17 @@
+/// Native CLI entry point. Thin wrapper over `resolve.resolveUrl` so the exact
+/// same code path is exercised by `zig build run` and the WASM worker.
 const std = @import("std");
-const spec_mod = @import("spec.zig");
-const url_mod = @import("url.zig");
-
-const ItemSpec = spec_mod.ItemSpec;
+const resolve = @import("resolve.zig");
 
 const usage =
     \\usage: md-docrs-zig <SPEC> [--target TRIPLE]
     \\
     \\Spec grammar: crate[@version][::path::to::item]
     \\
-    \\v0 prints the rustdoc JSON URL that the Rust implementation would fetch.
-    \\The full fetch + render pipeline lives in the Rust crate; this binary is
-    \\kept lean so it can be compiled to WebAssembly for a size comparison.
+    \\Prints the rustdoc JSON URL that the Rust implementation would fetch.
+    \\The full fetch + render pipeline lives in the Rust crate; this binary
+    \\stays lean so the same logic can ship as a WebAssembly worker (see
+    \\../src/index.ts) for a size comparison with the Rust WASM build.
     \\
 ;
 
@@ -64,29 +64,14 @@ pub fn main() !void {
         std.process.exit(2);
     };
 
-    var spec = ItemSpec.parse(allocator, raw) catch |err| {
-        try stderr.print("invalid spec '{s}': {s}\n", .{ raw, @errorName(err) });
+    var buf: [512]u8 = undefined;
+    const n = resolve.resolveUrl(allocator, raw, target, &buf);
+    if (n == 0) {
+        try stderr.print("error: could not resolve URL for '{s}'\n", .{raw});
         try stderr.flush();
         std.process.exit(2);
-    };
-    defer spec.deinit();
-    spec.target = target;
+    }
 
-    const url = try url_mod.buildUrl(
-        allocator,
-        url_mod.DEFAULT_BASE,
-        spec.crate_name,
-        spec.version,
-        spec.target,
-        url_mod.FORMAT_VERSION,
-    );
-    defer allocator.free(url);
-
-    try stdout.print("{s}\n", .{url});
+    try stdout.print("{s}\n", .{buf[0..n]});
     try stdout.flush();
-}
-
-test {
-    _ = @import("spec.zig");
-    _ = @import("url.zig");
 }

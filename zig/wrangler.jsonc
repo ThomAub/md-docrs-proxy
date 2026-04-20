@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "md-docrs-zig",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-20",
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": false }],
+  "observability": {
+    "logs": { "enabled": true }
+  }
+}

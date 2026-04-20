@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 pub struct AppState {
     pub fetcher: Fetcher,
-    pub cache: CrateCache,
+    pub cache: Arc<dyn CrateCache>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -127,7 +127,7 @@ async fn serve(
         path,
     };
 
-    match render_spec(&spec, &state.fetcher, &state.cache).await {
+    match render_spec(&spec, &state.fetcher, state.cache.as_ref()).await {
         Ok(body) => {
             let mut headers = HeaderMap::new();
             headers.insert(

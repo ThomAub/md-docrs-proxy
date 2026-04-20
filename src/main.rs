@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use md_docrs_proxy::{ItemSpec, cache::CrateCache, fetch::Fetcher, render_spec};
+use md_docrs_proxy::{ItemSpec, cache::InMemoryCache, fetch::Fetcher, render_spec};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -77,7 +77,7 @@ async fn render_cmd(raw: &str, target: Option<String>) -> Result<()> {
         .with_context(|| format!("invalid spec: {raw}"))?
         .with_target(target);
     let fetcher = Fetcher::new()?;
-    let cache = CrateCache::default();
+    let cache = InMemoryCache::default();
     let md = render_spec(&spec, &fetcher, &cache).await?;
     print!("{md}");
     Ok(())
@@ -87,7 +87,7 @@ async fn serve_cmd(bind: &str, port: u16) -> Result<()> {
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     let state = Arc::new(server::AppState {
         fetcher: Fetcher::new()?,
-        cache: CrateCache::default(),
+        cache: Arc::new(InMemoryCache::default()),
     });
     let app = server::router(state);
     tracing::info!(%addr, "md-docrs serve listening");

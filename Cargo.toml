@@ -1,0 +1,31 @@
+[package]
+name = "md_docrs_proxy"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "md-docrs"
+path = "src/main.rs"
+
+[lib]
+name = "md_docrs_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+lru = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rustdoc-types = "0.57"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zstd = "0.13"
+
+[profile.release]
+lto = "thin"

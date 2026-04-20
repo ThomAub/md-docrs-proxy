@@ -1,7 +1,7 @@
 .{
     .name = .md_docrs_zig,
     .version = "0.1.0",
-    .fingerprint = 0xb3f2a91c4d6e7058,
+    .fingerprint = 0x8259478368ccd9fe,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{

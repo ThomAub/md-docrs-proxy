@@ -15,8 +15,8 @@ use std::sync::Arc;
 /// High-level entry point: take a parsed `ItemSpec`, return rendered Markdown.
 ///
 /// Fetches and caches the crate's rustdoc JSON via the supplied `fetch::Fetcher`
-/// and `cache::CrateCache`, resolves the requested item, and renders it to
-/// Markdown.
+/// and any `cache::CrateCache` implementation, resolves the requested item,
+/// and renders it to Markdown.
 ///
 /// # Errors
 /// Forwards errors from `Fetcher::fetch` (network / docs.rs / decode failures)
@@ -24,7 +24,7 @@ use std::sync::Arc;
 pub async fn render_spec(
     spec: &ItemSpec,
     fetcher: &fetch::Fetcher,
-    cache: &cache::CrateCache,
+    cache: &dyn cache::CrateCache,
 ) -> Result<String> {
     let krate = load_crate(spec, fetcher, cache).await?;
     let resolved = resolve::resolve(&krate, spec)?;
@@ -34,20 +34,20 @@ pub async fn render_spec(
 async fn load_crate(
     spec: &ItemSpec,
     fetcher: &fetch::Fetcher,
-    cache: &cache::CrateCache,
+    cache: &dyn cache::CrateCache,
 ) -> Result<Arc<rustdoc_types::Crate>> {
     let key = cache::CacheKey {
         crate_name: spec.crate_name.clone(),
         version: spec.version.clone(),
         target: spec.target.clone(),
     };
-    if let Some(hit) = cache.get(&key) {
+    if let Some(hit) = cache.get(&key).await {
         return Ok(hit);
     }
     let krate = fetcher
         .fetch(&spec.crate_name, &spec.version, spec.target.as_deref())
         .await?;
     let arc = Arc::new(krate);
-    cache.put(key, Arc::clone(&arc));
+    cache.put(key, Arc::clone(&arc)).await;
     Ok(arc)
 }

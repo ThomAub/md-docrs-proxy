@@ -1,26 +1,9 @@
+use super::{CacheKey, CrateCache};
 use async_trait::async_trait;
 use lru::LruCache;
 use rustdoc_types::Crate;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CacheKey {
-    pub crate_name: String,
-    pub version: String,
-    pub target: Option<String>,
-}
-
-/// A pluggable backing store for parsed rustdoc `Crate`s.
-///
-/// Implementations may live in-process (see [`InMemoryCache`]), on disk, or
-/// in a remote key-value store such as Cloudflare Workers KV. Methods are
-/// async so backends that perform I/O can await without blocking.
-#[async_trait]
-pub trait CrateCache: Send + Sync {
-    async fn get(&self, key: &CacheKey) -> Option<Arc<Crate>>;
-    async fn put(&self, key: CacheKey, value: Arc<Crate>);
-}
 
 /// Thread-safe, bounded LRU holding parsed `Crate`s behind an `Arc` so
 /// renderers can operate without holding the cache lock.

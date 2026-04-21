@@ -2079,6 +2079,7 @@ dependencies = [
  "md-docrs-core",
  "rustdoc-types",
  "serde_json",
+ "tokio",
  "ureq",
  "zstd",
 ]

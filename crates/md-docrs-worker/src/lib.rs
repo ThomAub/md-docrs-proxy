@@ -9,7 +9,7 @@ use md_docrs_core::{
 use rustdoc_types::{Crate, FORMAT_VERSION};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{Cursor, Read},
+    io::{BufReader, Cursor, Read},
     sync::Arc,
 };
 use worker::kv::{KvError, KvStore};
@@ -110,14 +110,16 @@ impl WorkerFetcher {
             )));
         }
 
-        let decoded = ruzstd::decoding::StreamingDecoder::new(Cursor::new(bytes))
-            .map_err(|err| {
-                Error::Io(std::io::Error::other(format!(
-                    "zstd decode init failed: {err}"
-                )))
-            })?
-            .bytes()
-            .collect::<std::io::Result<Vec<u8>>>()?;
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(Cursor::new(
+            bytes,
+        )))
+        .map_err(|err| {
+            Error::Io(std::io::Error::other(format!(
+                "zstd decode init failed: {err}"
+            )))
+        })?;
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded)?;
         let krate: Crate = serde_json::from_slice(&decoded)?;
         validate_format_version(&krate)?;
         Ok(krate)
@@ -202,6 +204,19 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
 async fn route(req: Request, state: AppState) -> Result<Response> {
     let path = req.path();
+    let url = req.url()?;
+
+    if let Some(spec) = url
+        .query_pairs()
+        .find(|(key, _)| key == "spec")
+        .map(|(_, value)| value.into_owned())
+    {
+        let target = url
+            .query_pairs()
+            .find(|(key, _)| key == "target")
+            .map(|(_, value)| value.into_owned());
+        return serve_spec(&state, &spec, target).await;
+    }
 
     if path == "/" {
         return text_response(
@@ -218,6 +233,11 @@ async fn route(req: Request, state: AppState) -> Result<Response> {
     if path == "/kv" {
         return kv_list(&state).await;
     }
+
+    let target = url
+        .query_pairs()
+        .find(|(key, _)| key == "target")
+        .map(|(_, value)| value.into_owned());
 
     let segments: Vec<&str> = path
         .split('/')
@@ -245,7 +265,7 @@ async fn route(req: Request, state: AppState) -> Result<Response> {
         Vec::new()
     };
 
-    serve(&state, &crate_name, &version, &path_segs).await
+    serve(&state, &crate_name, &version, target, &path_segs).await
 }
 
 fn parse_rest_segments(segments: &[&str]) -> Vec<String> {
@@ -317,10 +337,20 @@ async fn kv_list(state: &AppState) -> Result<Response> {
     text_response(200, &body, "application/json; charset=utf-8")
 }
 
+async fn serve_spec(state: &AppState, raw_spec: &str, target: Option<String>) -> Result<Response> {
+    let spec = match ItemSpec::parse(raw_spec) {
+        Ok(spec) => spec.with_target(target),
+        Err(err) => return error_response(&err),
+    };
+
+    render_spec_response(state, spec).await
+}
+
 async fn serve(
     state: &AppState,
     crate_name: &str,
     version: &str,
+    target: Option<String>,
     path_segs: &[String],
 ) -> Result<Response> {
     let path: Vec<String> = match path_segs.split_first() {
@@ -331,10 +361,14 @@ async fn serve(
     let spec = ItemSpec {
         crate_name: crate_name.to_string(),
         version: version.to_string(),
-        target: None,
+        target,
         path,
     };
 
+    render_spec_response(state, spec).await
+}
+
+async fn render_spec_response(state: &AppState, spec: ItemSpec) -> Result<Response> {
     let key = CacheKey {
         crate_name: spec.crate_name.clone(),
         version: spec.version.clone(),

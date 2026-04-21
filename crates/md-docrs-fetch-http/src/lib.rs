@@ -7,6 +7,7 @@ use md_docrs_core::{
 };
 use rustdoc_types::{Crate, FORMAT_VERSION};
 use std::{io::Cursor, time::Duration};
+use tokio::task;
 
 /// Native docs.rs fetcher shared by the CLI and native server crates.
 ///
@@ -103,31 +104,42 @@ impl RustdocFetcher for UreqRustdocFetcher {
             target,
             Some(FORMAT_VERSION),
         );
+        let probe_url = build_url(&self.base, crate_name, version, target, None);
+        let fetcher = Self {
+            agent: self.agent.clone(),
+            base: self.base.clone(),
+            user_agent: self.user_agent.clone(),
+        };
+        let crate_name = crate_name.to_string();
+        let version = version.to_string();
 
-        let (status, bytes) = self.get_bytes(&url)?;
+        task::spawn_blocking(move || {
+            let (status, bytes) = fetcher.get_bytes(&url)?;
 
-        if status == 404 {
-            let probe_url = build_url(&self.base, crate_name, version, target, None);
-            let probe_status = self.head_status(&probe_url)?;
-            if (200..300).contains(&probe_status) {
+            if status == 404 {
+                let probe_status = fetcher.head_status(&probe_url)?;
+                if (200..300).contains(&probe_status) {
+                    return Err(Error::Fetch(format!(
+                        "{crate_name}@{version} has no rustdoc JSON for format version {FORMAT_VERSION}; waiting on docs.rs rebuild"
+                    )));
+                }
                 return Err(Error::Fetch(format!(
-                    "{crate_name}@{version} has no rustdoc JSON for format version {FORMAT_VERSION}; waiting on docs.rs rebuild"
+                    "{crate_name}@{version} not found on docs.rs"
                 )));
             }
-            return Err(Error::Fetch(format!(
-                "{crate_name}@{version} not found on docs.rs"
-            )));
-        }
 
-        if !(200..300).contains(&status) {
-            return Err(Error::Fetch(format!(
-                "{status} response for {crate_name}@{version}"
-            )));
-        }
+            if !(200..300).contains(&status) {
+                return Err(Error::Fetch(format!(
+                    "{status} response for {crate_name}@{version}"
+                )));
+            }
 
-        let decoded = zstd::decode_all(Cursor::new(bytes))?;
-        let krate: Crate = serde_json::from_slice(&decoded)?;
-        validate_format_version(&krate)?;
-        Ok(krate)
+            let decoded = zstd::decode_all(Cursor::new(bytes))?;
+            let krate: Crate = serde_json::from_slice(&decoded)?;
+            validate_format_version(&krate)?;
+            Ok(krate)
+        })
+        .await
+        .map_err(|err| Error::Fetch(format!("blocking fetch task failed: {err}")))?
     }
 }

@@ -5,11 +5,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use md_docrs_proxy::{Error, ItemSpec, cache::CrateCache, fetch::Fetcher, render_spec};
+use md_docrs_core::{Error, ItemSpec, RustdocFetcher, cache::CrateCache, render_spec};
 use std::sync::Arc;
 
 pub struct AppState {
-    pub fetcher: Fetcher,
+    pub fetcher: Arc<dyn RustdocFetcher>,
     pub cache: Arc<dyn CrateCache>,
 }
 
@@ -29,6 +29,7 @@ async fn root() -> &'static str {
     "md-docrs-proxy - GET /<crate>[/<version>][/<path>] for Markdown docs\n"
 }
 
+#[axum::debug_handler]
 async fn crate_root(
     State(state): State<Arc<AppState>>,
     Path(crate_name): Path<String>,
@@ -36,6 +37,7 @@ async fn crate_root(
     serve(&state, &crate_name, "latest", &[]).await
 }
 
+#[axum::debug_handler]
 async fn version_root(
     State(state): State<Arc<AppState>>,
     Path((crate_name, version)): Path<(String, String)>,
@@ -43,6 +45,7 @@ async fn version_root(
     serve(&state, &crate_name, &version, &[]).await
 }
 
+#[axum::debug_handler]
 async fn deep(
     State(state): State<Arc<AppState>>,
     Path((crate_name, version, rest)): Path<(String, String, String)>,
@@ -127,7 +130,7 @@ async fn serve(
         path,
     };
 
-    match render_spec(&spec, &state.fetcher, state.cache.as_ref()).await {
+    match render_spec(&spec, state.fetcher.as_ref(), state.cache.as_ref()).await {
         Ok(body) => {
             let mut headers = HeaderMap::new();
             headers.insert(
@@ -147,11 +150,9 @@ fn error_to_response(e: &Error) -> Response {
     let status = match e {
         Error::NotFound(_) => StatusCode::NOT_FOUND,
         Error::InvalidSpec(_) => StatusCode::BAD_REQUEST,
-        Error::FormatVersionMismatch { .. }
-        | Error::Fetch(_)
-        | Error::Http(_)
-        | Error::Json(_)
-        | Error::Io(_) => StatusCode::BAD_GATEWAY,
+        Error::FormatVersionMismatch { .. } | Error::Fetch(_) | Error::Json(_) | Error::Io(_) => {
+            StatusCode::BAD_GATEWAY
+        }
     };
     (status, e.to_string()).into_response()
 }

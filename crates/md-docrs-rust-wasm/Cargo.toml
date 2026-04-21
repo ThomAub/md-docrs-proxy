@@ -1,17 +1,17 @@
 [package]
-name = "md-docrs-wasm"
-version = "0.1.0"
-edition = "2024"
+name = "md-docrs-rust-wasm"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [lib]
-# cdylib for the actual wasm artifact, rlib so `cargo test -p md-docrs-wasm`
+# cdylib for the actual wasm artifact, rlib so `cargo test -p md-docrs-rust-wasm`
 # can exercise the exported functions on the host.
 crate-type = ["cdylib", "rlib"]
 
 [features]
 # Default: render only (host-driven fetch + decompression). Kept on by
-# default so `cargo test -p md-docrs-wasm` exercises the renderer.
+# default so `cargo test -p md-docrs-rust-wasm` exercises the renderer.
 #   - `render` pulls in serde_json + rustdoc-types for JSON -> Markdown.
 #   - `fetch` adds the host `env.fetch_bytes` import and in-WASM zstd
 #     decoding (via ruzstd) so the module owns the full pipeline.
@@ -23,7 +23,7 @@ full = ["render", "fetch"]
 
 [dependencies]
 # Pulls in only the pure pipeline (spec / resolve / render / cache).
-md_docrs_proxy = { path = "..", default-features = false }
-rustdoc-types = { version = "0.57", optional = true }
-serde_json = { version = "1", optional = true }
+md-docrs-core = { path = "../md-docrs-core", default-features = false }
+rustdoc-types = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 ruzstd = { version = "0.8", optional = true, default-features = false, features = ["std"] }

@@ -2,10 +2,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use md_docrs_proxy::{
+use md_docrs_core::{
     ItemSpec,
     cache::{CrateCache, InMemoryCache},
-    fetch::Fetcher,
     render_spec,
 };
 use std::net::SocketAddr;
@@ -13,9 +12,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(feature = "hybrid-cache")]
-use md_docrs_proxy::cache::{FoyerHybridCache, FoyerHybridCacheConfig};
+use md_docrs_core::cache::{FoyerHybridCache, FoyerHybridCacheConfig};
 
+mod fetch;
 mod server;
+
+use crate::fetch::CliFetcher;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -85,16 +87,7 @@ async fn main() -> Result<()> {
                 cache_memory_bytes,
             }),
             _,
-        ) => {
-            serve_cmd(
-                &bind,
-                port,
-                cache_dir,
-                cache_disk_bytes,
-                cache_memory_bytes,
-            )
-            .await
-        }
+        ) => serve_cmd(&bind, port, cache_dir, cache_disk_bytes, cache_memory_bytes).await,
         (None, Some(spec)) => render_cmd(&spec, cli.target).await,
         (None, None) => {
             eprintln!("usage: md-docrs <SPEC> | md-docrs serve | md-docrs render <SPEC>");
@@ -116,7 +109,7 @@ async fn render_cmd(raw: &str, target: Option<String>) -> Result<()> {
     let spec = ItemSpec::parse(raw)
         .with_context(|| format!("invalid spec: {raw}"))?
         .with_target(target);
-    let fetcher = Fetcher::new()?;
+    let fetcher = CliFetcher::new();
     let cache = InMemoryCache::default();
     let md = render_spec(&spec, &fetcher, &cache).await?;
     print!("{md}");
@@ -133,7 +126,7 @@ async fn serve_cmd(
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     let cache = build_cache(cache_dir, cache_disk_bytes, cache_memory_bytes).await?;
     let state = Arc::new(server::AppState {
-        fetcher: Fetcher::new()?,
+        fetcher: Arc::new(CliFetcher::new()),
         cache,
     });
     let app = server::router(state);

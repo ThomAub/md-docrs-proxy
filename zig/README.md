@@ -1,151 +1,264 @@
 # md-docrs-zig
 
-Zig 0.16 port of the spec-parsing / URL-building portion of `md-docrs-proxy`, compiled two ways:
+Zig implementation of the **minimal URL-resolution surface** of this repository.
 
-- **WASM** (`wasm32-freestanding`, `ReleaseSmall`) — runs on Cloudflare Workers via `src/index.ts`. Layout and memory protocol mirror [zigflare](https://github.com/mattzcarey/zigflare).
-- **Native CLI** — same core `resolve.resolveUrl`, wrapped with argv handling in `lib/cli.zig`. Useful for local iteration and for A/B testing against the Rust binary.
+This subtree is intentionally small and separate from the Rust workspace. Its job is to answer:
 
-Scope is intentionally narrow so the WASM artifact is directly comparable to a same-scope Rust WASM build: no HTTP, no zstd, no rustdoc-JSON parsing, no Markdown renderer — those stay in the root Rust crate.
+- can Zig produce a smaller `.wasm` for the same ABI?
+- can Zig match Rust's `resolve_url` behavior exactly?
+- can the same host code load either module unchanged?
+
+It is **not** the full docs.rs proxy. It does not fetch rustdoc JSON, decompress zstd, or render Markdown.
+
+## Boundaries
+
+### What lives here
+
+`zig/` owns the minimal, self-contained path:
+
+- parse `crate[@version][::path]`
+- build the corresponding docs.rs rustdoc JSON URL
+- expose that logic through:
+  - a Zig native CLI
+  - a tiny WASM module
+  - a Cloudflare Worker wrapper in TypeScript
+
+### What does not live here
+
+The following stay on the Rust side:
+
+- HTTP fetching
+- caching
+- zstd decoding
+- rustdoc JSON parsing
+- Markdown rendering
+- the main CLI/server application
+
+That split is deliberate. It keeps the Zig implementation lean and makes size/perf comparisons fair.
+
+## Relationship to the Rust workspace
+
+The repository has three distinct layers:
+
+1. `crates/md-docrs-core`
+   - shared Rust logic for the full pipeline
+
+2. `crates/md-docrs-rust-wasm`
+   - Rust WASM module with the same low-level ABI as the Zig WASM module
+   - can be built in:
+     - minimal mode: `resolve_url` only
+     - fuller mode: adds render support
+
+3. `zig/`
+   - independent Zig implementation of the minimal ABI surface
+
+At the top level, `wasm/` is just a harness area:
+
+- `wasm/build.sh` stages Zig and Rust artifacts into `wasm/artifacts/`
+- `crates/md-docrs-wasm-compare` loads those artifacts and compares size, parity, and latency
+
+So the conceptual split is:
+
+- **Rust workspace** = production pipeline and Rust WASM
+- **Zig subtree** = minimal alternative implementation
+- **wasm/** = comparison/staging glue
 
 ## Layout
 
-```
+```/dev/null/zig-layout.txt#L1-17
 zig/
-├── lib/                     # Zig sources (build runs here)
+├── lib/
 │   ├── build.zig
 │   ├── build.zig.zon
-│   ├── spec.zig             # pure: crate[@version][::path] grammar
-│   ├── url.zig              # pure: docs.rs URL builder
-│   ├── resolve.zig          # pure: spec + url glue, native tests
-│   ├── wasm.zig             # WASM entry: alloc / free / resolve_url
-│   └── cli.zig              # native CLI entry
-├── src/                     # Cloudflare Worker (TypeScript)
+│   ├── spec.zig
+│   ├── url.zig
+│   ├── resolve.zig
+│   ├── wasm.zig
+│   └── cli.zig
+├── src/
 │   ├── index.ts
 │   ├── md_docrs.wasm.d.ts
-│   └── md_docrs.wasm        # produced by `npm run build:wasm`
+│   └── md_docrs.wasm
 ├── package.json
 ├── tsconfig.json
 └── wrangler.jsonc
 ```
 
+## Components
+
+### `lib/spec.zig`
+Parses the spec grammar:
+
+- `crate`
+- `crate@version`
+- `crate::path::to::item`
+- `crate@version::path::to::item`
+
+### `lib/url.zig`
+Builds the docs.rs JSON URL from parsed pieces.
+
+### `lib/resolve.zig`
+Pure glue between parsing and URL building. This is the logic shared by the CLI and WASM entrypoints.
+
+### `lib/wasm.zig`
+Exports the minimal ABI used for host-neutral comparisons.
+
+### `lib/cli.zig`
+Wraps the same core resolver as a native command-line tool.
+
+### `src/index.ts`
+Cloudflare Worker host for the WASM module. This is host glue only; the actual URL resolution lives in Zig WASM.
+
 ## Build
 
-Everything runs from `zig/lib/`. `zig build` produces only the WASM artifact
-by default — the CLI and tests are explicit steps so `npm run build:wasm`
-stays focused.
+Most Zig work happens from `zig/lib/`.
 
-```sh
+```/dev/null/zig-build.sh#L1-11
 cd zig/lib
 
-# WASM (default step).
+# Build the WASM artifact.
 zig build
-# -> zig-out/bin/md-docrs.wasm
 
-# Native CLI.
+# Build the native CLI.
 zig build cli
-# -> zig-out/bin/md-docrs-zig
 
-# Unit tests (spec / url / resolve).
+# Run unit tests.
 zig build test
+```
+
+If you want to run the test step from the repository root, point Zig at the build file explicitly:
+
+```/dev/null/zig-build-root.sh#L1-1
+zig build test --build-file zig/lib/build.zig
 ```
 
 ## Native CLI
 
-`md-docrs-zig` wraps the same `resolve.resolveUrl` that the WASM build
-exports, so it's the fastest way to sanity-check a spec without spinning
-up the Worker.
+The CLI is the fastest way to sanity-check the minimal resolver behavior.
 
-```sh
+```/dev/null/zig-cli.sh#L1-13
 cd zig/lib
 zig build cli
 
-# Run directly.
 ./zig-out/bin/md-docrs-zig serde
-# https://docs.rs/crate/serde/latest/json/57.zst
-
 ./zig-out/bin/md-docrs-zig 'tokio@1.52.1::sync::Mutex'
-# https://docs.rs/crate/tokio/1.52.1/json/57.zst
-
 ./zig-out/bin/md-docrs-zig 'anyhow::Error' --target x86_64-unknown-linux-gnu
-# https://docs.rs/crate/anyhow/latest/x86_64-unknown-linux-gnu/json/57.zst
 
-./zig-out/bin/md-docrs-zig --help
-
-# Or run through the build system (rebuilds if needed, forwards args after --).
+# Or via the build runner:
 zig build run -- 'tokio@1.52.1::sync::Mutex' --target x86_64-unknown-linux-gnu
+```
+
+Expected output is always a fully resolved docs.rs rustdoc JSON URL, for example:
+
+```/dev/null/zig-cli-output.txt#L1-3
+https://docs.rs/crate/serde/latest/json/57.zst
+https://docs.rs/crate/tokio/1.52.1/json/57.zst
+https://docs.rs/crate/anyhow/latest/x86_64-unknown-linux-gnu/json/57.zst
 ```
 
 Exit codes:
 
 | Code | Meaning |
 | --- | --- |
-| 0 | URL printed to stdout. |
-| 2 | Bad spec, missing `--target` value, or unknown argument (usage on stderr). |
+| 0 | URL printed to stdout |
+| 2 | Invalid spec, missing `--target` value, or unknown argument |
 
 ## Worker
 
-```sh
+The Worker is a thin host around the Zig WASM module.
+
+```/dev/null/zig-worker.sh#L1-6
 cd zig
 npm install
-npm run build:wasm           # builds lib/ and copies the wasm into src/
-npm run dev                  # wrangler dev on localhost
-npm run deploy               # wrangler deploy
+npm run build:wasm
+npm run dev
+npm run deploy
 ```
 
-Endpoints:
+Example requests:
 
-```sh
-curl localhost:8787/serde                                    # latest
+```/dev/null/zig-worker-curl.sh#L1-4
+curl localhost:8787/serde
 curl localhost:8787/tokio@1.52.1::sync::Mutex
 curl 'localhost:8787/tokio::sync::Mutex?target=x86_64-unknown-linux-gnu'
 curl 'localhost:8787/?spec=anyhow::Error'
 ```
 
-All three print the fully resolved `https://docs.rs/crate/<crate>/<version>[/<target>]/json/57.zst` URL.
+Each returns a resolved docs.rs URL string.
 
 ## WASM ABI
 
-Exported from `lib/wasm.zig`:
+The Zig module exports a deliberately tiny ABI:
 
 | Export | Signature | Notes |
 | --- | --- | --- |
-| `alloc` | `(len: u32) -> *u8` | Backed by `std.heap.wasm_allocator`. Returns 0 on OOM. |
-| `free` | `(ptr: *u8, len: u32)` | Caller must pass the exact length passed to `alloc`. |
-| `resolve_url` | `(spec_ptr, spec_len, target_ptr, target_len, out_ptr, out_cap) -> u32` | Returns bytes written, or 0 on bad spec / out-of-space. `target_len == 0` means "no target override". |
+| `alloc` | `(len: u32) -> *u8` | Allocates in linear memory. Returns `0` on failure. |
+| `free` | `(ptr: *u8, len: u32)` | Caller must free with the same length used for allocation. |
+| `resolve_url` | `(spec_ptr, spec_len, target_ptr, target_len, out_ptr, out_cap) -> u32` | Writes the resolved URL into caller-provided output memory. Returns bytes written, or `0` on error. |
 
-Memory protocol notes in the zigflare [`doc/memory.md`](https://github.com/mattzcarey/zigflare/blob/main/doc/memory.md) apply verbatim: always recreate `Uint8Array` views *after* each `alloc`, since WASM memory growth detaches existing views.
+This ABI is intentionally matched by the Rust WASM crate so the same host can swap implementations without changing its calling convention.
 
-## Comparing with Rust WASM
+## Integration with Rust WASM
 
-The Rust equivalent lives at [`../rust-wasm/`](../rust-wasm/README.md). It exports
-the same `alloc` / `free` / `resolve_url` symbols with byte-for-byte identical
-signatures, so the Worker at `src/index.ts` can swap between the two by changing
-a single import path.
+The Rust equivalent is `crates/md-docrs-rust-wasm`.
 
-```sh
-# Minimal parity build — matches this Zig wasm surface 1:1.
+Both modules are meant to be interchangeable for the minimal path:
+
+- same exported function names
+- same memory ownership model
+- same `resolve_url` contract
+- same expected output bytes for the same input
+
+Build the Rust minimal module like this:
+
+```/dev/null/rust-wasm-build.sh#L1-3
 cargo build --profile wasm-release --target wasm32-unknown-unknown \
-  -p md-docrs-wasm --no-default-features
-cp ../target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm \
-   src/md_docrs.wasm   # drop-in replacement for the Zig artifact
-
-# Full pipeline build — also exports `render_markdown` (JSON → Markdown).
-cargo build --profile wasm-release --target wasm32-unknown-unknown \
-  -p md-docrs-wasm
+  -p md-docrs-rust-wasm --no-default-features
 ```
 
-What we're comparing:
+You can then compare the Zig and Rust artifacts through the top-level harness:
 
-- `.wasm` size (Zig `ReleaseSmall` + `strip` vs. Rust `opt-level=z` + fat LTO + `strip`).
-- Instantiation + per-call latency in a Worker.
-- Cold-start cost (wrangler measures this).
+```/dev/null/wasm-compare.sh#L1-2
+./wasm/build.sh
+cargo run -p md-docrs-wasm-compare -- --offline
+```
 
-For a host-neutral comparison that doesn't involve wrangler, use the
-[`wasm/`](../wasm/README.md) harness at the repo root. It builds both
-modules, runs the exact same specs through each inside embedded wasmtime
-(optionally wasmer), and reports byte size, output parity, and median / p95
-per-call latency in a single table.
+## Why this split exists
 
-Porting `render_markdown` to Zig is the interesting follow-up — that's
-where serde_json / rustdoc-types vs. `std.json` + hand-written types
-becomes a real apples-to-apples test.
+This subtree is intentionally narrow for two reasons:
+
+1. **clear ownership**
+   - Zig owns only the minimal resolver path
+   - Rust owns the full product pipeline
+
+2. **fair comparison**
+   - if both Zig and Rust expose only `resolve_url`, size and latency comparisons mean something
+   - if one side includes fetch/decompress/render and the other does not, the comparison becomes noisy
+
+## Current status
+
+Today, Zig covers:
+
+- spec parsing
+- URL resolution
+- native CLI
+- minimal WASM export
+- Worker hosting
+
+It does **not** yet cover:
+
+- JSON-to-Markdown rendering
+- in-WASM fetching
+- zstd decompression
+
+That is intentional. The minimal boundary is the stable comparison target.
+
+## Summary
+
+If you're deciding where code should go:
+
+- put **full docs.rs proxy behavior** in Rust workspace crates
+- put **minimal ABI-compatible URL resolution** in `zig/`
+- put **artifact staging and cross-runtime comparison** in top-level `wasm/`
+
+That keeps the repository lean and the boundaries clear.

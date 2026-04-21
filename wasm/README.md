@@ -1,114 +1,243 @@
-# wasm/ — side-by-side comparison harness
+# wasm/ — workspace-level WASM harness
 
-Runs the Zig and Rust wasm builds of `resolve_url` through the exact same
-sequence of specs and reports:
+This directory is **not** a Rust crate.
 
-- artifact size
-- resolved URL (parity check — every artifact must produce byte-identical output)
-- median and p95 per-call latency
-- raw Rust vs `wasm-opt -Oz` size comparison for the same build flavor
+It exists to keep the cross-language WASM comparison workflow in one simple place:
 
-Default runtime is embedded **wasmtime** (crate). The `wasmer` cargo feature
-swaps in the **wasmer** crate as an alternate host. Both are in-process
-embeddings, not the `wasmtime` / `wasmer` CLI binaries.
+- `build.sh` builds and stages WASM artifacts from the Rust and Zig implementations
+- `artifacts/` holds the staged `.wasm` files
+- this `README.md` explains how to run the comparison harness
+
+The actual Rust comparison binary lives in:
+
+- `crates/md-docrs-wasm-compare`
+
+## Boundaries
+
+Keep the repo split like this:
+
+- `crates/md-docrs-core` — shared Rust library logic
+- `crates/md-docrs-rust-wasm` — Rust WASM module
+- `crates/md-docrs-wasm-compare` — Rust host-side comparison harness
+- `zig/` — Zig implementation and its Worker wrapper
+- `wasm/` — staging area and glue docs/scripts only
+
+That separation keeps responsibilities lean:
+
+- Zig owns the Zig implementation
+- Rust owns the Rust implementation and host harness
+- `wasm/` owns only the artifact workflow
 
 ## Layout
 
-```
+```/dev/null/layout.txt#L1-11
 wasm/
-├── Cargo.toml          # md-docrs-wasm-compare (workspace member)
-├── src/main.rs         # harness: loads wasm, drives resolve_url, reports
-├── build.sh            # builds zig + rust wasms and stages them in artifacts/
-├── artifacts/          # .gitignored — populated by build.sh
-│   ├── zig-minimal.wasm
-│   ├── rust-minimal.wasm
-│   ├── rust-minimal-opt.wasm
-│   ├── rust-full.wasm
-│   └── rust-full-opt.wasm
-└── README.md
+├── README.md               # this file
+├── build.sh                # stages Rust + Zig wasm outputs into artifacts/
+└── artifacts/              # .gitignored staged outputs
+    ├── zig-minimal.wasm
+    ├── zig-full.wasm       # optional, only if Zig full build exists
+    ├── rust-minimal.wasm
+    ├── rust-minimal-opt.wasm
+    ├── rust-full.wasm
+    └── rust-full-opt.wasm
 ```
+
+Related workspace locations:
+
+```/dev/null/workspace-layout.txt#L1-8
+crates/
+├── md-docrs-rust-wasm/
+├── md-docrs-wasm-compare/
+└── ...
+zig/
+└── ...
+wasm/
+└── ...
+```
+
+## What gets compared
+
+The harness compares compatible WASM artifacts that share the same low-level ABI.
+
+Today that means:
+
+- **Zig minimal**
+  - exports `alloc`, `free`, `resolve_url`
+  - implements spec parsing + docs.rs URL resolution
+- **Rust minimal**
+  - exports the same minimal ABI
+  - meant to match the Zig surface
+- **Rust full**
+  - extends the surface with rendering functionality
+- **Zig full**
+  - optional future/experimental target if implemented
+
+The comparison harness reports:
+
+- artifact size
+- output parity for `resolve_url`
+- median and p95 latency
+- raw Rust size vs `wasm-opt -Oz` size
 
 ## Quick start
 
-```sh
-# From repo root.
-./wasm/build.sh                          # produces artifacts/*.wasm
-cargo run -p md-docrs-wasm-compare       # default: wasmtime, 200 iterations
+From the repo root:
+
+```/dev/null/quickstart.sh#L1-4
+./wasm/build.sh
+cargo run -p md-docrs-wasm-compare
 ```
 
-Sample output:
+That does two things:
 
+1. builds/stages available `.wasm` artifacts into `wasm/artifacts/`
+2. runs the host-side comparison binary from `crates/md-docrs-wasm-compare`
+
+## What `build.sh` does
+
+`wasm/build.sh` is the single entry point for artifact staging.
+
+It is responsible for:
+
+- building Zig minimal
+- attempting Zig full, but skipping it cleanly if unsupported
+- building Rust minimal from `crates/md-docrs-rust-wasm`
+- building Rust full from `crates/md-docrs-rust-wasm`
+- producing optimized Rust copies with `wasm-opt`
+- copying all generated outputs into `wasm/artifacts/`
+
+It should not contain harness logic.
+It should not become a second build system.
+Its job is only to stage comparable artifacts in one place.
+
+## Required tools
+
+You need these available on your machine:
+
+- Rust toolchain with `wasm32-unknown-unknown`
+- Zig
+- `wasm-opt` from Binaryen
+
+If `wasm-opt` is missing, `build.sh` should fail early because optimized Rust artifacts are part of the comparison output.
+
+## Artifact names
+
+The harness looks for these filenames in `wasm/artifacts/`:
+
+- `zig-minimal.wasm`
+- `zig-full.wasm`
+- `rust-minimal.wasm`
+- `rust-minimal-opt.wasm`
+- `rust-full.wasm`
+- `rust-full-opt.wasm`
+
+Any subset may be present.
+Missing files are skipped.
+
+That makes the flow flexible:
+
+- minimal-only comparison works
+- Rust-only comparison works
+- future Zig full comparison can slot in without redesign
+
+## Rust commands
+
+The Rust WASM module comes from `crates/md-docrs-rust-wasm`.
+
+Minimal build:
+
+```/dev/null/rust-minimal.sh#L1-3
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-rust-wasm --no-default-features
 ```
-artifact            bytes   flavor
--------------- ---------- --------
-zig-minimal          6775  minimal
-rust-minimal        36336  minimal
-rust-minimal-opt    25541  minimal
-rust-full          486387     full
-rust-full-opt      361606     full
 
-spec: tokio@1.52.1::sync::Mutex
-artifact        output                                            median µs      p95 µs
---------------  ------------------------------------------------  ---------  ----------
-zig             https://docs.rs/crate/tokio/1.52.1/json/57.zst            7           8
-rust-minimal    https://docs.rs/crate/tokio/1.52.1/json/57.zst            9           9
-rust-full       https://docs.rs/crate/tokio/1.52.1/json/57.zst            9           9
+Full build:
+
+```/dev/null/rust-full.sh#L1-3
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-rust-wasm --no-default-features --features full
 ```
 
-All three artifacts must return byte-identical URLs for every spec — that is
-the ABI parity check. Per-call latency includes three `alloc`s, one
-`resolve_url`, three `free`s, plus one `Memory::write` per input and one
-`Memory::read` for the output.
+Comparison harness:
 
-## Flags
+```/dev/null/harness.sh#L1-2
+cargo run -p md-docrs-wasm-compare
+```
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--runtime wasmtime\|wasmer` | `wasmtime` | Embedded host. `wasmer` requires `--features wasmer`. |
-| `--iterations N` | 200 | Hot-loop samples per (artifact, spec) cell. |
-| `--artifacts-dir PATH` | `wasm/artifacts` | Where to look for `zig-minimal.wasm`, `zig-full.wasm`, `rust-minimal.wasm`, `rust-minimal-opt.wasm`, `rust-full.wasm`, and `rust-full-opt.wasm`. |
+Optional Wasmer runtime:
 
-Any subset of the expected `.wasm` files may be missing — the harness just skips those rows.
-
-## Wasmer (optional)
-
-```sh
+```/dev/null/harness-wasmer.sh#L1-2
 cargo run -p md-docrs-wasm-compare --features wasmer -- --runtime wasmer
 ```
 
-Wasmer pulls in its own Cranelift fork; first build is ~20s. Both runtimes
-agree on output, but wasmer's singlepass / cranelift defaults typically
-give different per-call timings than wasmtime's cranelift — useful for
-separating ABI cost from JIT cost.
+## Zig commands
 
-## Running the raw `.wasm` without the harness
+The Zig implementation lives under `zig/`.
 
-The CLI form of wasmtime / wasmer can't easily marshal strings across the
-ABI boundary, but you can still inspect the modules:
+Minimal WASM build:
 
-```sh
-wasmtime compile wasm/artifacts/zig.wasm -o /tmp/zig.cwasm
-wasmer inspect wasm/artifacts/rust-minimal.wasm | head
+```/dev/null/zig-build.sh#L1-3
+cd zig/lib
+zig build
 ```
 
-For an end-to-end call you need host code that writes the spec into WASM
-memory and reads the result back — that's exactly what `src/main.rs` does.
+Native Zig tests:
 
-## Adding a new spec
+```/dev/null/zig-test.sh#L1-3
+zig build test --build-file zig/lib/build.zig
+```
 
-Edit `DEFAULT_SPECS` in `src/main.rs`. A spec is `(spec_string, optional_target)`
-and runs against every `.wasm` in the artifacts directory.
+If Zig full is not implemented yet, `build.sh` should print a skip message and continue.
 
-## wasm-opt outputs
+## Flags
 
-`build.sh` now requires `wasm-opt` on `PATH` and stages optimized Rust artifacts
-next to the raw cargo outputs:
+The harness supports these main flags:
 
-- `rust-minimal.wasm` — `cargo build --profile wasm-release --no-default-features`
-- `rust-minimal-opt.wasm` — same module after `wasm-opt -Oz --strip-debug --strip-dwarf`
-- `rust-full.wasm` — `cargo build --profile wasm-release --no-default-features --features full`
-- `rust-full-opt.wasm` — same module after `wasm-opt -Oz --strip-debug --strip-dwarf`
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--runtime wasmtime\|wasmer` | `wasmtime` | Embedded runtime used by the Rust host harness |
+| `--iterations N` | `200` | Hot-loop samples per artifact/spec pair |
+| `--artifacts-dir PATH` | `wasm/artifacts` | Directory containing staged `.wasm` files |
 
-That lets the harness report the size delta between the unoptimized Rust wasm
-and the post-processed `wasm-opt` version while still checking `resolve_url`
-output parity across all staged artifacts.
+If supported by the harness version you are running, other flags such as offline or render-specific controls follow the same rule: they belong to the host harness crate, not to `wasm/build.sh`.
+
+## Running raw modules manually
+
+The `.wasm` files can be inspected directly, but real calls require host code that:
+
+- allocates memory in the module
+- writes input bytes into WASM memory
+- calls exported functions
+- reads the output bytes
+- frees buffers correctly
+
+That host logic lives in the Rust comparison harness, not in this directory.
+
+## Design rule for this directory
+
+Keep `wasm/` boring.
+
+Good uses:
+
+- stage artifacts
+- document the comparison workflow
+- hold generated outputs
+
+Bad uses:
+
+- adding a second Rust crate here
+- duplicating logic from `crates/md-docrs-wasm-compare`
+- mixing Zig source code into this directory
+- mixing Rust library code into this directory
+
+## Summary
+
+If you are looking for:
+
+- the Rust WASM implementation: see `crates/md-docrs-rust-wasm`
+- the Rust host comparison program: see `crates/md-docrs-wasm-compare`
+- the Zig implementation: see `zig/`
+- the staged outputs and helper script: stay in `wasm/`
+
+The goal is simple: one place to stage artifacts, one Rust crate to compare them, and clear boundaries between Rust, Zig, and the shared WASM workflow.

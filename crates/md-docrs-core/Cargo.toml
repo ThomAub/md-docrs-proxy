@@ -1,0 +1,24 @@
+[package]
+name = "md-docrs-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "md_docrs_core"
+path = "src/lib.rs"
+
+[features]
+default = []
+hybrid-cache = ["dep:foyer", "dep:serde"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+lru.workspace = true
+rustdoc-types.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+foyer = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }

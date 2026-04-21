@@ -1,0 +1,6 @@
+name = "md-docrs-worker"
+main = "build/index.js"
+compatibility_date = "2025-04-21"
+
+[build]
+command = "cargo install \"worker-build@^0.8\" && worker-build --release"

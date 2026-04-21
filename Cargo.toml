@@ -1,70 +1,42 @@
 [workspace]
-members = [".", "rust-wasm", "wasm"]
-default-members = ["."]
+members = [
+  "crates/md-docrs-core",
+  "crates/md-docrs-cli",
+  "crates/md-docrs-worker",
+  "crates/md-docrs-rust-wasm",
+  "crates/md-docrs-wasm-compare",
+]
 resolver = "3"
 
-[package]
-name = "md_docrs_proxy"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "md-docrs"
-path = "src/main.rs"
-required-features = ["cli"]
-
-[lib]
-name = "md_docrs_proxy"
-path = "src/lib.rs"
-
-[features]
-default = ["cli", "http", "server"]
-# Pure pipeline (spec parse + resolve + render + in-memory cache) always compiles.
-# `http` adds the docs.rs fetcher (reqwest + zstd + tokio + tracing).
-http = ["dep:reqwest", "dep:zstd", "dep:tokio", "dep:tracing", "dep:bytes"]
-# `server` layers the axum HTTP mirror on top of `http`.
-server = ["http", "dep:axum", "dep:tower-http"]
-# `cli` is only relevant for the `md-docrs` binary.
-cli = [
-    "http",
-    "server",
-    "dep:anyhow",
-    "dep:clap",
-    "dep:tokio",
-    "dep:tracing",
-    "dep:tracing-subscriber",
-]
-# Opt-in disk-backed cache via foyer. Not wasm-compatible.
-hybrid-cache = ["dep:foyer", "dep:serde"]
-
-[dependencies]
-# Always on — used by the pure pipeline (spec, resolve, render, cache).
+[workspace.dependencies]
+anyhow = "1"
 async-trait = "0.1"
+axum = { version = "0.8", default-features = false }
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+foyer = { version = "0.22", features = ["serde"] }
 lru = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rustdoc-types = "0.57"
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tower-service = "0.3.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+worker = "0.5"
+worker-macros = "0.5"
+zstd = "0.13"
 
-# Optional — gated by features above.
-anyhow = { version = "1", optional = true }
-axum = { version = "0.8", optional = true }
-bytes = { version = "1", optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
-foyer = { version = "0.22", optional = true, features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
-serde = { version = "1", optional = true, features = ["derive", "rc"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
-tower-http = { version = "0.6", features = ["trace"], optional = true }
-tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-zstd = { version = "0.13", optional = true }
-
-[profile.release]
-lto = "thin"
-
-# Squeeze the wasm artifact as tight as possible — this is the module we
-# compare against Zig's ReleaseSmall build.
-[profile.release.package.md-docrs-wasm]
+[profile.release.package.md-docrs-rust-wasm]
 opt-level = "z"
 codegen-units = 1
 strip = true

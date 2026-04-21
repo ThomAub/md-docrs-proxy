@@ -164,7 +164,11 @@ fn print_help() {
 
 fn default_artifacts_dir() -> PathBuf {
     if let Some(dir) = option_env!("CARGO_MANIFEST_DIR") {
-        return Path::new(dir).join("artifacts");
+        return Path::new(dir)
+            .join("..")
+            .join("..")
+            .join("wasm")
+            .join("artifacts");
     }
     PathBuf::from("wasm/artifacts")
 }
@@ -209,9 +213,8 @@ fn main() -> Result<()> {
     if present.is_empty() {
         bail!(
             "no .wasm artifacts found under {}\n\
-             run `{}/build.sh` first, or pass --artifacts-dir",
+             run `./wasm/build.sh` first, or pass --artifacts-dir",
             args.artifacts_dir.display(),
-            env!("CARGO_MANIFEST_DIR"),
         );
     }
 

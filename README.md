@@ -1,95 +1,185 @@
 # md-docrs-proxy
 
-Proxy that downloads rustdoc JSON from docs.rs and renders it as Markdown - built for LLM agents that waste tokens scraping docs.rs HTML.
+`md-docrs-proxy` resolves docs.rs rustdoc JSON URLs and renders rustdoc JSON as Markdown.
+
+This repository is organized with clear boundaries between:
+
+- **Rust workspace crates** for the real application and shared logic
+- **Zig** for a minimal `resolve_url` implementation and Worker wrapper
+- **Top-level `wasm/`** for cross-language artifact staging and comparison
+
+## Repository boundaries
+
+### Rust workspace
+
+The Rust implementation lives under `crates/`:
+
+- `crates/md-docrs-core` — pure shared logic
+  - spec parsing
+  - docs.rs URL resolution
+  - rustdoc JSON rendering
+  - cache abstractions and shared types
+- `crates/md-docrs-cli` — native CLI and local HTTP server
+- `crates/md-docrs-worker` — Cloudflare Worker crate for the Rust side
+- `crates/md-docrs-rust-wasm` — Rust `wasm32-unknown-unknown` build exposing the WASM ABI
+- `crates/md-docrs-wasm-compare` — host-side comparison harness for staged `.wasm` artifacts
+
+### Zig
+
+The Zig implementation lives under `zig/`:
+
+- `zig/lib` — Zig source for:
+  - spec parsing
+  - docs.rs URL building
+  - minimal WASM ABI
+  - native Zig CLI
+- `zig/src` — TypeScript Cloudflare Worker wrapper for the Zig wasm module
+
+Zig is intentionally narrow in scope today: it is the minimal `resolve_url` implementation, not the full Markdown rendering pipeline.
+
+### Top-level wasm harness
+
+The top-level `wasm/` directory is **not** a Cargo crate anymore.
+
+It exists only for repo-level WASM workflow:
+
+- `wasm/build.sh` — builds/stages Zig and Rust wasm artifacts into `wasm/artifacts/`
+- `wasm/artifacts/` — generated staged artifacts used by the comparison harness
+- `wasm/README.md` — docs for the comparison flow
+
+The actual comparison binary lives in:
+
+- `crates/md-docrs-wasm-compare`
 
 ## Build
 
-```sh
-cargo build --release
-# binary at ./target/release/md-docrs
-```
-
-## CLI
-
-Spec grammar: `crate[@version][::path::to::item]`. Version defaults to `latest`.
+Build the Rust workspace:
 
 ```sh
-md-docrs anyhow                                       # crate index, latest
-md-docrs anyhow::Error                                # item page
-md-docrs tokio::sync::Mutex                           # follows pub use re-exports
-md-docrs tokio@1.52.1::sync::Mutex                    # pinned version
-md-docrs --target x86_64-unknown-linux-gnu tokio::sync::Mutex
+cargo build --workspace
 ```
 
-Not every `@version` pin works: docs.rs has to have rebuilt rustdoc JSON at the supported format version (currently 57) for that exact release. Older releases predate the rebuild and return `502`; pin to a recent version or drop the pin to use `latest`.
+## Native CLI
 
-Markdown goes to stdout. Pipe it into whatever consumes it.
+The main native binary is provided by `md-docrs-cli`.
 
-## Server
+Spec grammar:
 
-Mirrors docs.rs URLs, always replies with `text/markdown`:
+```text
+crate[@version][::path::to::item]
+```
+
+Version defaults to `latest`.
+
+Examples:
 
 ```sh
-md-docrs serve --port 8080 --bind 127.0.0.1
+cargo run -p md-docrs-cli -- anyhow
+cargo run -p md-docrs-cli -- anyhow::Error
+cargo run -p md-docrs-cli -- tokio::sync::Mutex
+cargo run -p md-docrs-cli -- tokio@1.52.1::sync::Mutex
+cargo run -p md-docrs-cli -- --target x86_64-unknown-linux-gnu tokio::sync::Mutex
 ```
+
+Not every `@version` pin works: docs.rs must have rebuilt rustdoc JSON for the supported format version for that exact release. Older releases may return `502`; in that case use a newer version or `latest`.
+
+Markdown goes to stdout.
+
+## Local server
+
+The native server also comes from `md-docrs-cli`.
 
 ```sh
-curl -s localhost:8080/anyhow                                       # crate root
-curl -s localhost:8080/anyhow/latest/anyhow/struct.Error.html       # item page
-curl -s localhost:8080/tokio/latest/tokio/sync/struct.Mutex.html    # re-exported item
+cargo run -p md-docrs-cli -- serve --port 8080 --bind 127.0.0.1
 ```
 
-Response headers: `Content-Type: text/markdown; charset=utf-8`, `X-Markdown-Tokens` (byte-count/4 heuristic), `Vary: Accept`.
+Examples:
 
-Status codes: 404 item not found, 400 bad spec, 502 upstream/decode error.
+```sh
+curl -s localhost:8080/anyhow
+curl -s localhost:8080/anyhow/latest/anyhow/struct.Error.html
+curl -s localhost:8080/tokio/latest/tokio/sync/struct.Mutex.html
+```
+
+Response shape:
+
+- `Content-Type: text/markdown; charset=utf-8`
+- `X-Markdown-Tokens`
+- `Vary: Accept`
+
+Status codes:
+
+- `400` bad spec
+- `404` item not found
+- `502` upstream/decode error
+
+## Rust WASM
+
+The Rust WASM module lives in:
+
+- `crates/md-docrs-rust-wasm`
+
+It exposes the shared ABI used for side-by-side comparison with Zig:
+
+- `alloc`
+- `free`
+- `resolve_url`
+- optionally `render_markdown`
+
+### Minimal Rust WASM build
+
+This is the closest match to the current Zig WASM surface.
+
+```sh
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-rust-wasm --no-default-features
+```
+
+### Full Rust WASM build
+
+This adds `render_markdown`.
+
+```sh
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-rust-wasm --no-default-features --features full
+```
+
+## Zig
+
+See:
+
+- [`zig/README.md`](zig/README.md)
+
+Typical Zig commands:
+
+```sh
+zig build --build-file zig/lib/build.zig
+zig build cli --build-file zig/lib/build.zig
+zig build test --build-file zig/lib/build.zig
+```
+
+## WASM comparison harness
+
+Use the top-level `wasm/` directory to stage artifacts, then run the Rust comparison harness.
+
+```sh
+./wasm/build.sh
+cargo run -p md-docrs-wasm-compare -- --offline
+```
+
+For full docs, see:
+
+- [`wasm/README.md`](wasm/README.md)
 
 ## Notes
 
-- In-memory LRU cache (32 crates) per process. No disk cache.
-- v0 does not render trait impls, blanket impls, or source links.
-- Glob re-exports into external crates (e.g. `clap::Parser` from `clap_builder`) are not followed.
-
-## WebAssembly builds
-
-Two same-ABI WASM modules live alongside the Rust library:
-
-- [`rust-wasm/`](rust-wasm/README.md) — `wasm32-unknown-unknown` build of
-  the pure pipeline (spec parse + resolve + render). Exports `alloc`,
-  `free`, `resolve_url`, and optionally `render_markdown`.
-- [`zig/`](zig/README.md) — Zig 0.16 port of the same surface (`resolve_url`
-  parity today; `render_markdown` is a follow-up). Ships a Cloudflare Worker
-  wrapper that can load either artifact unchanged.
-
-Build the Rust wasm:
-
-```sh
-# Minimal (resolve_url only — matches current Zig surface).
-cargo build --profile wasm-release --target wasm32-unknown-unknown \
-  -p md-docrs-wasm --no-default-features
-# Full (adds render_markdown, brings in serde_json + rustdoc-types).
-cargo build --profile wasm-release --target wasm32-unknown-unknown \
-  -p md-docrs-wasm
-# Optional shipped-size pass for Rust artifacts.
-wasm-opt -Oz --strip-debug --strip-dwarf \
-  -o wasm/artifacts/rust-minimal-opt.wasm \
-  target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm
-```
-
-The root crate's HTTP / server / CLI bits are gated behind `http`, `server`,
-and `cli` features (all on by default), so the pure pipeline compiles for
-`wasm32` without reqwest/tokio/axum/zstd.
-
-To compare the two modules side by side (size, output parity, per-call
-latency) under an embedded wasmtime or wasmer, see
-[`wasm/`](wasm/README.md):
-
-```sh
-./wasm/build.sh                          # builds zig + rust wasm, runs wasm-opt, stages them
-cargo run -p md-docrs-wasm-compare       # runs the table
-```
+- In-memory LRU cache only for the native process path
+- No disk cache by default
+- v0 does not render trait impls, blanket impls, or source links
+- Glob re-exports into external crates are not fully followed
 
 ## Logging
 
 ```sh
-RUST_LOG=md_docrs_proxy=debug md-docrs serve
+RUST_LOG=debug cargo run -p md-docrs-cli -- serve
 ```

@@ -19,9 +19,9 @@
 //! | -5   | spec parse / resolve miss / URL too long |
 //! | -6   | output pointer write failure |
 
-use md_docrs_proxy::ItemSpec;
+use md_docrs_core::ItemSpec;
 #[cfg(feature = "render")]
-use md_docrs_proxy::{render, resolve};
+use md_docrs_core::{render, resolve};
 #[cfg(feature = "render")]
 use rustdoc_types::Crate;
 use std::alloc::{Layout, alloc as rust_alloc, dealloc};
@@ -34,7 +34,11 @@ const FORMAT_VERSION: u32 = 57;
 const DOCS_RS_BASE: &str = "https://docs.rs";
 
 fn layout_for(len: usize) -> Option<Layout> {
-    if len == 0 { None } else { Layout::array::<u8>(len).ok() }
+    if len == 0 {
+        None
+    } else {
+        Layout::array::<u8>(len).ok()
+    }
 }
 
 /// Allocate `len` bytes inside the WASM linear memory. Returns null on failure
@@ -235,14 +239,7 @@ pub unsafe extern "C" fn render_spec(
 
     let mut resp_ptr: u32 = 0;
     let mut resp_len: u32 = 0;
-    let rc = unsafe {
-        fetch_bytes(
-            url.as_ptr(),
-            url.len() as u32,
-            &mut resp_ptr,
-            &mut resp_len,
-        )
-    };
+    let rc = unsafe { fetch_bytes(url.as_ptr(), url.len() as u32, &mut resp_ptr, &mut resp_len) };
     if rc != 0 {
         return -2;
     }
@@ -373,5 +370,4 @@ mod tests {
             free(ptr, 64);
         }
     }
-
 }

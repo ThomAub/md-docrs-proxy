@@ -2,6 +2,7 @@
 name = "md-docrs-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "CLI that renders docs.rs rustdoc JSON as Markdown"
 repository.workspace = true
 homepage.workspace = true

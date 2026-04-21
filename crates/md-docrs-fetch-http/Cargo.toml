@@ -2,6 +2,7 @@
 name = "md-docrs-fetch-http"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "HTTP rustdoc JSON fetcher for md-docrs"
 repository.workspace = true
 homepage.workspace = true

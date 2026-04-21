@@ -2,6 +2,7 @@
 name = "md-docrs-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Core docs.rs rustdoc JSON parsing and Markdown rendering for md-docrs"
 repository.workspace = true
 homepage.workspace = true

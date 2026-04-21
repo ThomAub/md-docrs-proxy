@@ -6,6 +6,7 @@ sequence of specs and reports:
 - artifact size
 - resolved URL (parity check — every artifact must produce byte-identical output)
 - median and p95 per-call latency
+- raw Rust vs `wasm-opt -Oz` size comparison for the same build flavor
 
 Default runtime is embedded **wasmtime** (crate). The `wasmer` cargo feature
 swaps in the **wasmer** crate as an alternate host. Both are in-process
@@ -19,9 +20,11 @@ wasm/
 ├── src/main.rs         # harness: loads wasm, drives resolve_url, reports
 ├── build.sh            # builds zig + rust wasms and stages them in artifacts/
 ├── artifacts/          # .gitignored — populated by build.sh
-│   ├── zig.wasm
+│   ├── zig-minimal.wasm
 │   ├── rust-minimal.wasm
-│   └── rust-full.wasm
+│   ├── rust-minimal-opt.wasm
+│   ├── rust-full.wasm
+│   └── rust-full-opt.wasm
 └── README.md
 ```
 
@@ -36,11 +39,13 @@ cargo run -p md-docrs-wasm-compare       # default: wasmtime, 200 iterations
 Sample output:
 
 ```
-artifact            bytes
--------------- ----------
-zig                  6775
-rust-minimal        36268
-rust-full          404159
+artifact            bytes   flavor
+-------------- ---------- --------
+zig-minimal          6775  minimal
+rust-minimal        36336  minimal
+rust-minimal-opt    25541  minimal
+rust-full          486387     full
+rust-full-opt      361606     full
 
 spec: tokio@1.52.1::sync::Mutex
 artifact        output                                            median µs      p95 µs
@@ -61,9 +66,9 @@ the ABI parity check. Per-call latency includes three `alloc`s, one
 | --- | --- | --- |
 | `--runtime wasmtime\|wasmer` | `wasmtime` | Embedded host. `wasmer` requires `--features wasmer`. |
 | `--iterations N` | 200 | Hot-loop samples per (artifact, spec) cell. |
-| `--artifacts-dir PATH` | `wasm/artifacts` | Where to look for `zig.wasm`, `rust-minimal.wasm`, `rust-full.wasm`. |
+| `--artifacts-dir PATH` | `wasm/artifacts` | Where to look for `zig-minimal.wasm`, `zig-full.wasm`, `rust-minimal.wasm`, `rust-minimal-opt.wasm`, `rust-full.wasm`, and `rust-full-opt.wasm`. |
 
-Any of the three `.wasm` files may be missing — the harness just skips that row.
+Any subset of the expected `.wasm` files may be missing — the harness just skips those rows.
 
 ## Wasmer (optional)
 
@@ -93,3 +98,17 @@ memory and reads the result back — that's exactly what `src/main.rs` does.
 
 Edit `DEFAULT_SPECS` in `src/main.rs`. A spec is `(spec_string, optional_target)`
 and runs against every `.wasm` in the artifacts directory.
+
+## wasm-opt outputs
+
+`build.sh` now requires `wasm-opt` on `PATH` and stages optimized Rust artifacts
+next to the raw cargo outputs:
+
+- `rust-minimal.wasm` — `cargo build --profile wasm-release --no-default-features`
+- `rust-minimal-opt.wasm` — same module after `wasm-opt -Oz --strip-debug --strip-dwarf`
+- `rust-full.wasm` — `cargo build --profile wasm-release --no-default-features --features full`
+- `rust-full-opt.wasm` — same module after `wasm-opt -Oz --strip-debug --strip-dwarf`
+
+That lets the harness report the size delta between the unoptimized Rust wasm
+and the post-processed `wasm-opt` version while still checking `resolve_url`
+output parity across all staged artifacts.

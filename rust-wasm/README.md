@@ -20,26 +20,39 @@ without any host-side code changes.
 # Minimal parity build — matches the Zig wasm surface (resolve_url only).
 cargo build --profile wasm-release --target wasm32-unknown-unknown \
   -p md-docrs-wasm --no-default-features
+wasm-opt -Oz --strip-debug --strip-dwarf \
+  -o target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.opt.wasm \
+  target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm
 
 # Full pipeline — adds render_markdown (serde_json + rustdoc-types).
 cargo build --profile wasm-release --target wasm32-unknown-unknown \
   -p md-docrs-wasm
+wasm-opt -Oz --strip-debug --strip-dwarf \
+  -o target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.opt.wasm \
+  target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm
 ```
 
-Artifact lives at `target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm`.
+Raw artifact lives at `target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm`.
+
+If you run `wasm-opt`, the optimized artifact can live alongside it, e.g.
+`target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.opt.wasm`.
 
 ## Size snapshot
 
-Measured on Rust 1.94 / Zig 0.16 with no post-build shrinking (no `wasm-opt`).
+Measured on Rust 1.94 / Zig 0.16.
 
 | Build | Bytes |
 | --- | ---: |
-| Zig 0.16 — `ReleaseSmall` + `strip`, exports `resolve_url` | *TBD (run `cd zig/lib && zig build && wc -c zig-out/bin/md-docrs.wasm`)* |
-| Rust `wasm-release` — `resolve_url` only (`--no-default-features`) | **35,939** |
-| Rust `wasm-release` — `resolve_url` + `render_markdown` | **414,560** |
+| Zig 0.16 — `ReleaseSmall` + `strip`, exports `resolve_url` | **6,775** |
+| Rust `wasm-release` — `resolve_url` only (`--no-default-features`) | **36,336** |
+| Rust `wasm-release` + `wasm-opt -Oz` — `resolve_url` only | **28,523** |
+| Rust `wasm-release` — `resolve_url` + `render_markdown` | **486,387** |
 
-The ~10x jump for `render_markdown` is serde_json + `rustdoc-types` deserialise
-impls. Expected; that's the cost of JSON→AST→Markdown.
+For the `resolve_url`-only Rust build, `wasm-opt -Oz` trims about **7,813 bytes**
+from the raw `wasm-release` artifact, roughly a **21.5%** reduction.
+
+The large jump for `render_markdown` is serde_json + `rustdoc-types`
+deserialise impls. Expected; that's the cost of JSON→AST→Markdown.
 
 ## Feature gates
 
@@ -76,4 +89,29 @@ Rust artifact.
   or the rustdoc types.
 - Benchmark instantiation + per-call latency side-by-side in a Worker
   (e.g. hyperfine-style loop from a test harness, or wrangler dev + `wrk`).
-- Optional: run `wasm-opt -Oz` on both artifacts for a true "shipped" size.
+- Keep comparing raw vs `wasm-opt -Oz` output as the Rust WASM surface grows,
+  especially once Zig gains the full render pipeline too.
+
+Option A: keep `std`, but drastically reduce code size
+This is the lowest-risk path.
+
+For the minimal build:
+- stop using `ItemSpec::parse`
+- stop using `String`
+- stop using `format!`
+- implement a tiny local parser over `&[u8]`
+- write URL bytes directly to `out_ptr`
+
+This alone could cut a lot.
+
+### Option B: create a dedicated `no_std` tiny crate
+Example direction:
+- `rust-wasm-tiny/`
+- exports only `resolve_url`
+- parser implemented over raw bytes
+- no `std`
+- no `serde`
+- no `rustdoc-types`
+- no dependency on main crate
+
+This is the path most likely to get you materially closer to Zig.

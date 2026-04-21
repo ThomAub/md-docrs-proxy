@@ -9,6 +9,30 @@ test:
 build:
     cargo build --workspace
 
+# Render Markdown for a docs.rs spec with the native CLI.
+cli spec="anyhow":
+    cargo run -p md-docrs-cli -- {{ spec }}
+
+# Render Markdown for a docs.rs spec with an explicit target triple.
+cli-target spec="tokio::sync::Mutex" target="x86_64-unknown-linux-gnu":
+    cargo run -p md-docrs-cli -- --target {{ target }} {{ spec }}
+
+# Preview the release artifacts cargo-dist would produce for a tag.
+dist-plan tag="v0.1.0":
+    dist plan --tag {{ tag }}
+
+# Build the current platform's release artifacts for a tag.
+dist-build tag="v0.1.0":
+    dist build --tag {{ tag }}
+
+# Preview the cargo-release flow for a version.
+release-preview version="0.1.0":
+    cargo release {{ version }}
+
+# Create the release commit/tag and publish crates, but keep the remote push explicit.
+release-run version="0.1.0":
+    cargo release {{ version }} --execute --no-push
+
 # Build the Cloudflare Worker crate for wasm.
 build-worker:
     cargo check -p md-docrs-worker --target wasm32-unknown-unknown
@@ -60,7 +84,12 @@ help-commands:
     @echo "  cargo build --workspace"
     @echo "  cargo test --workspace"
     @echo "  cargo run -p md-docrs-cli -- anyhow"
+    @echo "  cargo run -p md-docrs-cli -- --target x86_64-unknown-linux-gnu tokio::sync::Mutex"
     @echo "  cargo run -p md-docrs-server -- --port 8080 --bind 127.0.0.1"
+    @echo "  dist plan --tag v0.1.0"
+    @echo "  dist build --tag v0.1.0"
+    @echo "  cargo release 0.2.0"
+    @echo "  cargo release 0.2.0 --execute --no-push"
     @echo "  cargo build --profile wasm-release --target wasm32-unknown-unknown -p md-docrs-rust-wasm --no-default-features"
     @echo "  ./wasm/build.sh"
     @echo "  cargo run -p md-docrs-wasm-compare -- --offline"

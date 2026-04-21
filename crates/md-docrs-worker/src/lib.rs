@@ -118,9 +118,9 @@ impl WorkerFetcher {
                 "zstd decode init failed: {err}"
             )))
         })?;
-        let mut decoded = Vec::new();
-        decoder.read_to_end(&mut decoded)?;
-        let krate: Crate = serde_json::from_slice(&decoded)?;
+        let mut decoded_bytes = Vec::new();
+        decoder.read_to_end(&mut decoded_bytes)?;
+        let krate: Crate = serde_json::from_slice(&decoded_bytes)?;
         validate_format_version(&krate)?;
         Ok(krate)
     }

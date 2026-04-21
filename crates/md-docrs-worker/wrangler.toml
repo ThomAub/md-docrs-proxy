@@ -2,5 +2,9 @@ name = "md-docrs-worker"
 main = "build/index.js"
 compatibility_date = "2025-04-21"
 
+[[kv_namespaces]]
+binding = "EXAMPLE"
+id = "EXAMPLE"
+
 [build]
 command = "cargo install \"worker-build@^0.8\" && worker-build --release"

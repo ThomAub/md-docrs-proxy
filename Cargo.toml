@@ -1,7 +1,9 @@
 [workspace]
 members = [
   "crates/md-docrs-core",
+  "crates/md-docrs-fetch-http",
   "crates/md-docrs-cli",
+  "crates/md-docrs-server",
   "crates/md-docrs-worker",
   "crates/md-docrs-rust-wasm",
   "crates/md-docrs-wasm-compare",
@@ -32,8 +34,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-worker = "0.5"
-worker-macros = "0.5"
+worker = "0.8.1"
+worker-macros = "0.8.1"
 zstd = "0.13"
 
 [profile.release.package.md-docrs-rust-wasm]

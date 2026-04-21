@@ -1,22 +1,25 @@
 #![warn(clippy::pedantic)]
 
-use axum::{
-    Router,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
-    routing::get,
-};
 use md_docrs_core::{
-    Error, ItemSpec, Result, RustdocFetcher,
-    cache::{CrateCache, InMemoryCache},
+    Error, ItemSpec,
+    cache::CacheKey,
     fetch::{DOCS_RS_BASE, build_url, validate_format_version},
-    render_spec,
+    render_loaded_crate,
 };
 use rustdoc_types::{Crate, FORMAT_VERSION};
-use std::{future::Future, io::Cursor, pin::Pin, sync::Arc};
-use tower_service::Service;
-use worker::*;
+use serde::{Deserialize, Serialize};
+use std::{
+    io::{Cursor, Read},
+    sync::Arc,
+};
+use worker::kv::{KvError, KvStore};
+use worker::{Context, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result, event};
+
+#[derive(Clone)]
+struct AppState {
+    fetcher: Arc<WorkerFetcher>,
+    cache: Arc<KvCrateCache>,
+}
 
 #[derive(Clone)]
 struct WorkerFetcher {
@@ -30,7 +33,11 @@ impl WorkerFetcher {
         }
     }
 
-    async fn fetch_bytes(&self, url: &str, method: Method) -> Result<(u16, Vec<u8>)> {
+    async fn fetch_bytes(
+        &self,
+        url: &str,
+        method: Method,
+    ) -> md_docrs_core::Result<(u16, Vec<u8>)> {
         let mut init = RequestInit::new();
         init.with_method(method);
 
@@ -50,7 +57,7 @@ impl WorkerFetcher {
         Ok((status, bytes))
     }
 
-    async fn head_status(&self, url: &str) -> Result<u16> {
+    async fn head_status(&self, url: &str) -> md_docrs_core::Result<u16> {
         let mut init = RequestInit::new();
         init.with_method(Method::Head);
 
@@ -66,132 +73,207 @@ impl WorkerFetcher {
     }
 }
 
-impl RustdocFetcher for WorkerFetcher {
-    fn fetch<'a>(
-        &'a self,
-        crate_name: &'a str,
-        version: &'a str,
-        target: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = Result<Crate>> + 'a>> {
-        Box::pin(async move {
-            let url = build_url(
-                &self.base,
-                crate_name,
-                version,
-                target,
-                Some(FORMAT_VERSION),
-            );
+impl WorkerFetcher {
+    async fn fetch(
+        &self,
+        crate_name: &str,
+        version: &str,
+        target: Option<&str>,
+    ) -> md_docrs_core::Result<Crate> {
+        let url = build_url(
+            &self.base,
+            crate_name,
+            version,
+            target,
+            Some(FORMAT_VERSION),
+        );
 
-            let (status, bytes) = self.fetch_bytes(&url, Method::Get).await?;
+        let (status, bytes) = self.fetch_bytes(&url, Method::Get).await?;
 
-            if status == 404 {
-                let probe_url = build_url(&self.base, crate_name, version, target, None);
-                let probe_status = self.head_status(&probe_url).await?;
-                if (200..300).contains(&probe_status) {
-                    return Err(Error::Fetch(format!(
-                        "{crate_name}@{version} has no rustdoc JSON for format version {FORMAT_VERSION}; waiting on docs.rs rebuild"
-                    )));
-                }
+        if status == 404 {
+            let probe_url = build_url(&self.base, crate_name, version, target, None);
+            let probe_status = self.head_status(&probe_url).await?;
+            if (200..300).contains(&probe_status) {
                 return Err(Error::Fetch(format!(
-                    "{crate_name}@{version} not found on docs.rs"
+                    "{crate_name}@{version} has no rustdoc JSON for format version \
+                     {FORMAT_VERSION}; waiting on docs.rs rebuild"
                 )));
             }
+            return Err(Error::Fetch(format!(
+                "{crate_name}@{version} not found on docs.rs"
+            )));
+        }
 
-            if !(200..300).contains(&status) {
-                return Err(Error::Fetch(format!(
-                    "{status} response for {crate_name}@{version}"
-                )));
-            }
+        if !(200..300).contains(&status) {
+            return Err(Error::Fetch(format!(
+                "{status} response for {crate_name}@{version}"
+            )));
+        }
 
-            let decoded = zstd::decode_all(Cursor::new(bytes))?;
-            let krate: Crate = serde_json::from_slice(&decoded)?;
-            validate_format_version(&krate)?;
-            Ok(krate)
-        })
+        let decoded = ruzstd::decoding::StreamingDecoder::new(Cursor::new(bytes))
+            .map_err(|err| {
+                Error::Io(std::io::Error::other(format!(
+                    "zstd decode init failed: {err}"
+                )))
+            })?
+            .bytes()
+            .collect::<std::io::Result<Vec<u8>>>()?;
+        let krate: Crate = serde_json::from_slice(&decoded)?;
+        validate_format_version(&krate)?;
+        Ok(krate)
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedCrate {
+    krate: Crate,
 }
 
 #[derive(Clone)]
-struct AppState {
-    fetcher: Arc<dyn RustdocFetcher>,
-    cache: Arc<dyn CrateCache>,
+struct KvCrateCache {
+    kv: KvStore,
+    ttl_seconds: u64,
 }
 
-fn router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/", get(root))
-        .route("/healthz", get(healthz))
-        .route("/{crate_name}", get(crate_root))
-        .route("/{crate_name}/", get(crate_root))
-        .route("/{crate_name}/{version}", get(version_root))
-        .route("/{crate_name}/{version}/", get(version_root))
-        .route("/{crate_name}/{version}/{*rest}", get(deep))
-        .with_state(state)
+impl KvCrateCache {
+    fn new(kv: KvStore) -> Self {
+        Self {
+            kv,
+            ttl_seconds: 60 * 60,
+        }
+    }
+
+    fn key_string(key: &CacheKey) -> String {
+        match &key.target {
+            Some(target) => format!("crate:{}:{}:{}", key.crate_name, key.version, target),
+            None => format!("crate:{}:{}", key.crate_name, key.version),
+        }
+    }
 }
 
-async fn root() -> &'static str {
-    "md-docrs-worker - GET /<crate>[/<version>][/<path>] for Markdown docs\n"
+impl KvCrateCache {
+    async fn get(&self, key: &CacheKey) -> Option<Arc<Crate>> {
+        let cache_key = Self::key_string(key);
+
+        match self.kv.get(&cache_key).json::<CachedCrate>().await {
+            Ok(Some(cached)) => Some(Arc::new(cached.krate)),
+            Ok(None) | Err(_) => None,
+        }
+    }
+
+    async fn put(&self, key: CacheKey, value: Arc<Crate>) {
+        let cache_key = Self::key_string(&key);
+        let cached = CachedCrate {
+            krate: (*value).clone(),
+        };
+
+        let Ok(payload) = serde_json::to_string(&cached) else {
+            return;
+        };
+
+        let builder = match self.kv.put(&cache_key, payload) {
+            Ok(builder) => builder.expiration_ttl(self.ttl_seconds),
+            Err(err) => {
+                if matches!(err, KvError::InvalidKvStore(_)) {
+                    panic!("invalid kv store");
+                }
+                return;
+            }
+        };
+
+        if let Err(err) = builder.execute().await
+            && matches!(err, KvError::InvalidKvStore(_))
+        {
+            panic!("invalid kv store");
+        }
+    }
 }
 
-async fn healthz() -> &'static str {
-    "ok"
+#[event(fetch)]
+async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    let kv = env.kv("EXAMPLE")?;
+    let state = AppState {
+        fetcher: Arc::new(WorkerFetcher::new()),
+        cache: Arc::new(KvCrateCache::new(kv)),
+    };
+
+    route(req, state).await
 }
 
-#[axum_macros::debug_handler]
-async fn crate_root(
-    State(state): State<Arc<AppState>>,
-    Path(crate_name): Path<String>,
-) -> Response {
-    serve(&state, &crate_name, "latest", &[]).await
-}
+async fn route(req: Request, state: AppState) -> Result<Response> {
+    let path = req.path();
 
-#[axum_macros::debug_handler]
-async fn version_root(
-    State(state): State<Arc<AppState>>,
-    Path((crate_name, version)): Path<(String, String)>,
-) -> Response {
-    serve(&state, &crate_name, &version, &[]).await
-}
+    if path == "/" {
+        return text_response(
+            200,
+            "md-docrs-worker - GET /<crate>[/<version>][/<path>] for Markdown docs\n",
+            "text/plain; charset=utf-8",
+        );
+    }
 
-#[axum_macros::debug_handler]
-async fn deep(
-    State(state): State<Arc<AppState>>,
-    Path((crate_name, version, rest)): Path<(String, String, String)>,
-) -> Response {
-    let path_segs = parse_rest(&rest);
+    if path == "/healthz" {
+        return text_response(200, "ok", "text/plain; charset=utf-8");
+    }
+
+    if path == "/kv" {
+        return kv_list(&state).await;
+    }
+
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    if segments.is_empty() {
+        return text_response(
+            200,
+            "md-docrs-worker - GET /<crate>[/<version>][/<path>] for Markdown docs\n",
+            "text/plain; charset=utf-8",
+        );
+    }
+
+    let crate_name = segments[0].to_string();
+    let version = if segments.len() >= 2 {
+        segments[1].to_string()
+    } else {
+        "latest".to_string()
+    };
+
+    let path_segs = if segments.len() > 2 {
+        parse_rest_segments(&segments[2..])
+    } else {
+        Vec::new()
+    };
+
     serve(&state, &crate_name, &version, &path_segs).await
 }
 
-fn parse_rest(rest: &str) -> Vec<String> {
-    let rest = rest.trim_end_matches('/');
-    if rest.is_empty() {
+fn parse_rest_segments(segments: &[&str]) -> Vec<String> {
+    if segments.is_empty() {
         return vec![];
     }
 
-    let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
-    let mut out = Vec::with_capacity(parts.len());
-    if parts.is_empty() {
-        return out;
-    }
+    let last_idx = segments.len() - 1;
+    let mut out = Vec::with_capacity(segments.len());
 
-    let last_idx = parts.len() - 1;
-    for (i, seg) in parts.iter().enumerate() {
-        if i == last_idx {
-            if let Some(name) = strip_kind_prefix(seg) {
+    for (idx, segment) in segments.iter().enumerate() {
+        if idx == last_idx {
+            if let Some(name) = strip_kind_prefix(segment) {
                 out.push(name);
             } else {
-                out.push((*seg).to_string());
+                out.push((*segment).to_string());
             }
         } else {
-            out.push((*seg).to_string());
+            out.push((*segment).to_string());
         }
     }
 
     out
 }
 
-fn strip_kind_prefix(seg: &str) -> Option<String> {
-    let seg = seg.strip_suffix(".html").unwrap_or(seg);
+fn strip_kind_prefix(segment: &str) -> Option<String> {
+    let segment = segment.strip_suffix(".html").unwrap_or(segment);
+
     for prefix in [
         "struct.",
         "enum.",
@@ -206,11 +288,33 @@ fn strip_kind_prefix(seg: &str) -> Option<String> {
         "derive.",
         "attr.",
     ] {
-        if let Some(rest) = seg.strip_prefix(prefix) {
+        if let Some(rest) = segment.strip_prefix(prefix) {
             return Some(rest.to_string());
         }
     }
+
     None
+}
+
+async fn kv_list(state: &AppState) -> Result<Response> {
+    let list_response = state
+        .cache
+        .kv
+        .list()
+        .limit(100)
+        .execute()
+        .await
+        .map_err(|e| {
+            if matches!(e, KvError::InvalidKvStore(_)) {
+                panic!("invalid kv store");
+            }
+            e
+        })?;
+
+    let body = serde_json::to_string_pretty(&list_response)
+        .map_err(|err| worker::Error::RustError(err.to_string()))?;
+
+    text_response(200, &body, "application/json; charset=utf-8")
 }
 
 async fn serve(
@@ -218,8 +322,8 @@ async fn serve(
     crate_name: &str,
     version: &str,
     path_segs: &[String],
-) -> Response {
-    let path = match path_segs.split_first() {
+) -> Result<Response> {
+    let path: Vec<String> = match path_segs.split_first() {
         Some((head, tail)) if head == crate_name => tail.to_vec(),
         _ => path_segs.to_vec(),
     };
@@ -231,48 +335,60 @@ async fn serve(
         path,
     };
 
-    match render_spec(&spec, state.fetcher.as_ref(), state.cache.as_ref()).await {
-        Ok(body) => {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                header::CONTENT_TYPE,
-                "text/markdown; charset=utf-8".parse().unwrap(),
-            );
-            headers.insert(header::VARY, "Accept".parse().unwrap());
-            headers.insert(
-                "x-markdown-tokens",
-                (body.len() / 4).to_string().parse().unwrap(),
-            );
-            (StatusCode::OK, headers, body).into_response()
-        }
-        Err(err) => error_to_response(&err),
+    let key = CacheKey {
+        crate_name: spec.crate_name.clone(),
+        version: spec.version.clone(),
+        target: spec.target.clone(),
+    };
+
+    let krate = if let Some(hit) = state.cache.get(&key).await {
+        hit
+    } else {
+        let fetched = match state
+            .fetcher
+            .fetch(&spec.crate_name, &spec.version, spec.target.as_deref())
+            .await
+        {
+            Ok(fetched) => fetched,
+            Err(err) => return error_response(&err),
+        };
+        let krate = Arc::new(fetched);
+        state.cache.put(key, Arc::clone(&krate)).await;
+        krate
+    };
+
+    match render_loaded_crate(&krate, &spec) {
+        Ok(body) => markdown_response(&body),
+        Err(err) => error_response(&err),
     }
 }
 
-fn error_to_response(err: &Error) -> Response {
-    let status = match err {
-        Error::NotFound(_) => StatusCode::NOT_FOUND,
-        Error::InvalidSpec(_) => StatusCode::BAD_REQUEST,
-        Error::FormatVersionMismatch { .. } | Error::Fetch(_) | Error::Json(_) | Error::Io(_) => {
-            StatusCode::BAD_GATEWAY
-        }
-    };
-    (status, err.to_string()).into_response()
+fn markdown_response(body: &str) -> Result<Response> {
+    let headers = Headers::new();
+    headers.set("content-type", "text/markdown; charset=utf-8")?;
+    headers.set("vary", "Accept")?;
+    headers.set("x-markdown-tokens", &(body.len() / 4).to_string())?;
+
+    Ok(Response::ok(body.to_string())?.with_headers(headers))
 }
 
-#[event(fetch)]
-async fn fetch(
-    req: HttpRequest,
-    _env: Env,
-    _ctx: Context,
-) -> worker::Result<axum::http::Response<axum::body::Body>> {
-    let state = Arc::new(AppState {
-        fetcher: Arc::new(WorkerFetcher::new()),
-        cache: Arc::new(InMemoryCache::default()),
-    });
+fn error_response(err: &Error) -> Result<Response> {
+    let status = match err {
+        Error::NotFound(_) => 404,
+        Error::InvalidSpec(_) => 400,
+        Error::FormatVersionMismatch { .. } | Error::Fetch(_) | Error::Json(_) | Error::Io(_) => {
+            502
+        }
+    };
 
-    router(state)
-        .call(req)
-        .await
-        .map_err(|err| worker::Error::RustError(err.to_string()))
+    text_response(status, &err.to_string(), "text/plain; charset=utf-8")
+}
+
+fn text_response(status: u16, body: &str, content_type: &str) -> Result<Response> {
+    let headers = Headers::new();
+    headers.set("content-type", content_type)?;
+
+    Ok(Response::ok(body.to_string())?
+        .with_headers(headers)
+        .with_status(status))
 }

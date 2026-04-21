@@ -1,18 +1,24 @@
 [package]
-name = "md-docrs-cli"
+name = "md-docrs-server"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "md-docrs"
+name = "md-docrs-server"
 path = "src/main.rs"
+
+[features]
+default = ["hybrid-cache"]
+hybrid-cache = ["md-docrs-core/hybrid-cache"]
 
 [dependencies]
 anyhow.workspace = true
+axum = { workspace = true, features = ["tokio", "http1", "macros"] }
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tower-http.workspace = true
 
 md-docrs-core = { path = "../md-docrs-core" }
 md-docrs-fetch-http = { path = "../md-docrs-fetch-http" }

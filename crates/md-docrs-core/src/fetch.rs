@@ -1,5 +1,4 @@
 use crate::{Error, Result};
-use async_trait::async_trait;
 use rustdoc_types::{Crate, FORMAT_VERSION};
 
 pub const DOCS_RS_BASE: &str = "https://docs.rs";
@@ -24,23 +23,6 @@ pub fn build_url(
         Some(v) => format!("{base}/crate/{crate_name}/{version}{target_seg}/json/{v}.zst"),
         None => format!("{base}/crate/{crate_name}/{version}{target_seg}/json.zst"),
     }
-}
-
-/// Minimal transport abstraction for loading parsed rustdoc JSON.
-///
-/// Platform-specific callers provide their own implementation:
-/// - CLI can use a small native HTTP client
-/// - Cloudflare Worker can use the Worker runtime fetch API
-#[async_trait(?Send)]
-pub trait RustdocFetcher: Send + Sync {
-    /// Fetch, decode, and parse rustdoc JSON for the requested crate.
-    ///
-    /// # Errors
-    /// Returns transport-specific fetch failures as `Error::Fetch`,
-    /// unsupported schema versions as `Error::FormatVersionMismatch`,
-    /// JSON parse failures as `Error::Json`, and decode failures as `Error::Io`
-    /// or `Error::Fetch` depending on the implementation.
-    async fn fetch(&self, crate_name: &str, version: &str, target: Option<&str>) -> Result<Crate>;
 }
 
 /// Shared validation helper for fetcher implementations.

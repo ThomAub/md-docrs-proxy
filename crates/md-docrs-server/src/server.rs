@@ -26,7 +26,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 async fn root() -> &'static str {
-    "md-docrs-proxy - GET /<crate>[/<version>][/<path>] for Markdown docs\n"
+    "md-docrs-server - GET /<crate>[/<version>][/<path>] for Markdown docs\n"
 }
 
 #[axum::debug_handler]
@@ -66,12 +66,15 @@ fn parse_rest(rest: &str) -> Vec<String> {
     if rest.is_empty() {
         return vec![];
     }
+
     let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
-    let mut out: Vec<String> = Vec::with_capacity(parts.len());
     if parts.is_empty() {
-        return out;
+        return vec![];
     }
+
     let last_idx = parts.len() - 1;
+    let mut out = Vec::with_capacity(parts.len());
+
     for (i, seg) in parts.iter().enumerate() {
         if i == last_idx {
             if let Some(name) = strip_kind_prefix(seg) {
@@ -83,11 +86,13 @@ fn parse_rest(rest: &str) -> Vec<String> {
             out.push((*seg).to_string());
         }
     }
+
     out
 }
 
 fn strip_kind_prefix(seg: &str) -> Option<String> {
     let seg = seg.strip_suffix(".html").unwrap_or(seg);
+
     for prefix in [
         "struct.",
         "enum.",
@@ -106,6 +111,7 @@ fn strip_kind_prefix(seg: &str) -> Option<String> {
             return Some(rest.to_string());
         }
     }
+
     None
 }
 
@@ -115,9 +121,6 @@ async fn serve(
     version: &str,
     path_segs: &[String],
 ) -> Response {
-    // docs.rs URLs embed the crate name as the first module segment (e.g.
-    // /serde/latest/serde/de/trait.Foo.html). Strip it so the spec path is
-    // relative to the crate root.
     let path: Vec<String> = match path_segs.split_first() {
         Some((head, tail)) if head == crate_name => tail.to_vec(),
         _ => path_segs.to_vec(),
@@ -137,22 +140,24 @@ async fn serve(
                 header::CONTENT_TYPE,
                 "text/markdown; charset=utf-8".parse().unwrap(),
             );
-            let tokens = body.len() / 4;
-            headers.insert("x-markdown-tokens", tokens.to_string().parse().unwrap());
             headers.insert(header::VARY, "Accept".parse().unwrap());
+            headers.insert(
+                "x-markdown-tokens",
+                (body.len() / 4).to_string().parse().unwrap(),
+            );
             (StatusCode::OK, headers, body).into_response()
         }
-        Err(e) => error_to_response(&e),
+        Err(err) => error_to_response(&err),
     }
 }
 
-fn error_to_response(e: &Error) -> Response {
-    let status = match e {
+fn error_to_response(err: &Error) -> Response {
+    let status = match err {
         Error::NotFound(_) => StatusCode::NOT_FOUND,
         Error::InvalidSpec(_) => StatusCode::BAD_REQUEST,
         Error::FormatVersionMismatch { .. } | Error::Fetch(_) | Error::Json(_) | Error::Io(_) => {
             StatusCode::BAD_GATEWAY
         }
     };
-    (status, e.to_string()).into_response()
+    (status, err.to_string()).into_response()
 }

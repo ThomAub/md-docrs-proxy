@@ -1,7 +1,8 @@
 #![warn(clippy::pedantic)]
 
+use async_trait::async_trait;
 use rustdoc_types::Crate;
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 pub mod cache;
 pub mod error;
@@ -14,13 +15,14 @@ pub use error::{Error, Result};
 pub use fetch::{DOCS_RS_BASE, build_url, validate_format_version};
 pub use spec::ItemSpec;
 
+#[async_trait]
 pub trait RustdocFetcher: Send + Sync {
-    fn fetch<'a>(
-        &'a self,
-        crate_name: &'a str,
-        version: &'a str,
-        target: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = Result<Crate>> + 'a>>;
+    /// Fetch and decode the rustdoc JSON crate for the requested package.
+    ///
+    /// # Errors
+    /// Returns any transport, decode, or parse error surfaced by the
+    /// implementation.
+    async fn fetch(&self, crate_name: &str, version: &str, target: Option<&str>) -> Result<Crate>;
 }
 
 /// High-level entry point: take a parsed [`ItemSpec`], fetch the rustdoc crate,
@@ -32,8 +34,8 @@ pub trait RustdocFetcher: Send + Sync {
 /// - cache-independent resolution errors from [`resolve::resolve`]
 pub async fn render_spec(
     spec: &ItemSpec,
-    fetcher: &dyn RustdocFetcher,
-    cache: &dyn cache::CrateCache,
+    fetcher: &(dyn RustdocFetcher + Send + Sync),
+    cache: &(dyn cache::CrateCache + Send + Sync),
 ) -> Result<String> {
     let krate = load_crate(spec, fetcher, cache).await?;
     render_loaded_crate(&krate, spec)
@@ -45,8 +47,8 @@ pub async fn render_spec(
 /// Returns any error produced by the fetcher.
 pub async fn load_crate(
     spec: &ItemSpec,
-    fetcher: &dyn RustdocFetcher,
-    cache: &dyn cache::CrateCache,
+    fetcher: &(dyn RustdocFetcher + Send + Sync),
+    cache: &(dyn cache::CrateCache + Send + Sync),
 ) -> Result<Arc<Crate>> {
     let key = cache::CacheKey {
         crate_name: spec.crate_name.clone(),

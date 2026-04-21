@@ -175,8 +175,43 @@ fn default_artifacts_dir() -> PathBuf {
 
 fn main() -> Result<()> {
     let args = parse_args()?;
+    let all = artifacts(&args);
+    let present: Vec<_> = all
+        .iter()
+        .filter(|artifact| artifact.path.exists())
+        .collect();
 
-    let all = [
+    if present.is_empty() {
+        bail!(
+            "no .wasm artifacts found under {}\n\
+             run `./wasm/build.sh` first, or pass --artifacts-dir",
+            args.artifacts_dir.display(),
+        );
+    }
+
+    print_run_header(&args);
+    print_artifact_sizes(&present)?;
+
+    for spec in DEFAULT_SPECS {
+        print_spec_header(spec);
+        print_resolve_results(&present, &args, spec)?;
+        print_render_results(&present, &args, spec)?;
+        println!();
+    }
+
+    Ok(())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() > max {
+        format!("{}...", &s[..max.saturating_sub(3)])
+    } else {
+        s.to_string()
+    }
+}
+
+fn artifacts(args: &Args) -> [Artifact; 6] {
+    [
         Artifact {
             label: "zig-minimal",
             path: args.artifacts_dir.join("zig-minimal.wasm"),
@@ -207,17 +242,10 @@ fn main() -> Result<()> {
             path: args.artifacts_dir.join("rust-full-opt.wasm"),
             flavor: Flavor::Full,
         },
-    ];
+    ]
+}
 
-    let present: Vec<_> = all.iter().filter(|a| a.path.exists()).collect();
-    if present.is_empty() {
-        bail!(
-            "no .wasm artifacts found under {}\n\
-             run `./wasm/build.sh` first, or pass --artifacts-dir",
-            args.artifacts_dir.display(),
-        );
-    }
-
+fn print_run_header(args: &Args) {
     println!("runtime:    {:?}", args.runtime);
     println!(
         "iterations: resolve_url={}, render_spec={}",
@@ -229,114 +257,131 @@ fn main() -> Result<()> {
         if args.offline { "offline" } else { "online" }
     );
     println!();
+}
 
+fn print_artifact_sizes(present: &[&Artifact]) -> Result<()> {
     println!("{:<14} {:>10} {:>8}", "artifact", "bytes", "flavor");
     println!("{:-<14} {:->10} {:->8}", "", "", "");
-    for a in &present {
-        let meta = fs::metadata(&a.path)?;
-        let flavor = match a.flavor {
+
+    for artifact in present {
+        let meta = fs::metadata(&artifact.path)?;
+        let flavor = match artifact.flavor {
             Flavor::Minimal => "minimal",
             Flavor::Full => "full",
         };
-        println!("{:<14} {:>10} {:>8}", a.label, meta.len(), flavor);
+        println!("{:<14} {:>10} {:>8}", artifact.label, meta.len(), flavor);
     }
+
     println!();
+    Ok(())
+}
 
-    for spec in DEFAULT_SPECS {
-        println!(
-            "spec: {}{}",
-            spec.spec,
-            spec.target
-                .map(|t| format!(" (target={t})"))
-                .unwrap_or_default(),
-        );
-        println!(
-            "{:<14}  {:<60}  {:>10}  {:>10}",
-            "artifact", "resolve_url output", "median us", "p95 us"
-        );
-        println!("{:-<14}  {:-<60}  {:->10}  {:->10}", "", "", "", "");
-        for a in &present {
-            let bytes = fs::read(&a.path)?;
-            match run_resolve(args.runtime, &bytes, spec, args.iterations) {
-                Ok(result) => {
-                    let output = result
-                        .output
-                        .as_deref()
-                        .unwrap_or("<resolve_url returned 0>");
-                    let shown = truncate(output, 60);
-                    println!(
-                        "{:<14}  {:<60}  {:>10}  {:>10}",
-                        a.label,
-                        shown,
-                        result.median.as_micros(),
-                        result.p95.as_micros(),
-                    );
-                }
-                Err(e) => println!("{:<14}  resolve_url error: {}", a.label, e),
+fn print_spec_header(spec: &Spec) {
+    println!(
+        "spec: {}{}",
+        spec.spec,
+        spec.target
+            .map(|target| format!(" (target={target})"))
+            .unwrap_or_default(),
+    );
+    println!(
+        "{:<14}  {:<60}  {:>10}  {:>10}",
+        "artifact", "resolve_url output", "median us", "p95 us"
+    );
+    println!("{:-<14}  {:-<60}  {:->10}  {:->10}", "", "", "", "");
+}
+
+fn print_resolve_results(present: &[&Artifact], args: &Args, spec: &Spec) -> Result<()> {
+    for artifact in present {
+        let bytes = fs::read(&artifact.path)?;
+        match run_resolve(args.runtime, &bytes, spec, args.iterations) {
+            Ok(result) => {
+                let output = result
+                    .output
+                    .as_deref()
+                    .unwrap_or("<resolve_url returned 0>");
+                let shown = truncate(output, 60);
+                println!(
+                    "{:<14}  {:<60}  {:>10}  {:>10}",
+                    artifact.label,
+                    shown,
+                    result.median.as_micros(),
+                    result.p95.as_micros(),
+                );
             }
+            Err(error) => println!("{:<14}  resolve_url error: {}", artifact.label, error),
         }
-
-        if !args.offline && present.iter().any(|a| a.flavor == Flavor::Full) {
-            println!();
-            println!(
-                "{:<14}  {:>8}  {:>8}  {:>10}  {:>10}  {:<16}",
-                "artifact", "md bytes", "fetch ms", "render ms", "total ms", "parity"
-            );
-            println!(
-                "{:-<14}  {:->8}  {:->8}  {:->10}  {:->10}  {:-<16}",
-                "", "", "", "", "", ""
-            );
-            let mut parity: HashMap<String, Vec<&str>> = HashMap::new();
-            for a in &present {
-                if a.flavor != Flavor::Full {
-                    continue;
-                }
-                let bytes = fs::read(&a.path)?;
-                match run_render(args.runtime, &bytes, spec, args.render_iterations) {
-                    Ok(r) => {
-                        let hash = blake3::hash(r.output.as_bytes());
-                        let short = short_hash(hash.to_hex().as_str());
-                        parity.entry(short.clone()).or_default().push(a.label);
-                        println!(
-                            "{:<14}  {:>8}  {:>8}  {:>10}  {:>10}  {:<16}",
-                            a.label,
-                            r.output.len(),
-                            r.fetch_median.as_millis(),
-                            r.render_median.as_millis(),
-                            r.total_median.as_millis(),
-                            short,
-                        );
-                    }
-                    Err(e) => println!("{:<14}  render_spec error: {}", a.label, e),
-                }
-            }
-            if parity.len() > 1 {
-                println!("parity:  outputs differ across artifacts");
-                for (hash, labels) in &parity {
-                    println!("   {}: {}", hash, labels.join(", "));
-                }
-            } else if let Some((hash, labels)) = parity.iter().next() {
-                if labels.len() > 1 {
-                    println!(
-                        "parity:  all {} full artifacts agree ({})",
-                        labels.len(),
-                        hash
-                    );
-                }
-            }
-        }
-
-        println!();
     }
 
     Ok(())
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}...", &s[..max.saturating_sub(3)])
-    } else {
-        s.to_string()
+fn print_render_results(present: &[&Artifact], args: &Args, spec: &Spec) -> Result<()> {
+    if args.offline
+        || !present
+            .iter()
+            .any(|artifact| artifact.flavor == Flavor::Full)
+    {
+        return Ok(());
+    }
+
+    println!();
+    println!(
+        "{:<14}  {:>8}  {:>8}  {:>10}  {:>10}  {:<16}",
+        "artifact", "md bytes", "fetch ms", "render ms", "total ms", "parity"
+    );
+    println!(
+        "{:-<14}  {:->8}  {:->8}  {:->10}  {:->10}  {:-<16}",
+        "", "", "", "", "", ""
+    );
+
+    let mut parity: HashMap<String, Vec<&str>> = HashMap::new();
+    for artifact in present {
+        if artifact.flavor != Flavor::Full {
+            continue;
+        }
+
+        let bytes = fs::read(&artifact.path)?;
+        match run_render(args.runtime, &bytes, spec, args.render_iterations) {
+            Ok(result) => {
+                let hash = blake3::hash(result.output.as_bytes());
+                let short = short_hash(hash.to_hex().as_str());
+                parity
+                    .entry(short.clone())
+                    .or_default()
+                    .push(artifact.label);
+                println!(
+                    "{:<14}  {:>8}  {:>8}  {:>10}  {:>10}  {:<16}",
+                    artifact.label,
+                    result.output.len(),
+                    result.fetch_median.as_millis(),
+                    result.render_median.as_millis(),
+                    result.total_median.as_millis(),
+                    short,
+                );
+            }
+            Err(error) => println!("{:<14}  render_spec error: {}", artifact.label, error),
+        }
+    }
+
+    print_parity_summary(&parity);
+    Ok(())
+}
+
+fn print_parity_summary(parity: &HashMap<String, Vec<&str>>) {
+    if parity.len() > 1 {
+        println!("parity:  outputs differ across artifacts");
+        for (hash, labels) in parity {
+            println!("   {}: {}", hash, labels.join(", "));
+        }
+    } else if let Some((hash, labels)) = parity.iter().next()
+        && labels.len() > 1
+    {
+        println!(
+            "parity:  all {} full artifacts agree ({})",
+            labels.len(),
+            hash
+        );
     }
 }
 
@@ -386,7 +431,7 @@ fn run_render(
 fn stats(mut samples: Vec<Duration>) -> (Duration, Duration) {
     samples.sort();
     let median = samples[samples.len() / 2];
-    let p95_idx = ((samples.len() as f64) * 0.95) as usize;
+    let p95_idx = samples.len().saturating_mul(95) / 100;
     let p95 = samples[p95_idx.min(samples.len() - 1)];
     (median, p95)
 }
@@ -405,7 +450,10 @@ fn blocking_http_client() -> Result<reqwest::blocking::Client> {
 }
 
 mod wasmtime_runner {
-    use super::*;
+    use super::{
+        Context, Duration, HashMap, OUT_CAP, RenderResult, ResolveResult, Result, Spec, bail,
+        blocking_http_client, median_duration, stats,
+    };
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
     use wasmtime::{Caller, Engine, Linker, Memory, Module, Store, TypedFunc};
@@ -585,7 +633,7 @@ mod wasmtime_runner {
                 let resp = client.get(&url).send().context("fetch_bytes: GET failed")?;
                 let status = resp.status();
                 if !status.is_success() {
-                    return Ok(status.as_u16() as i32);
+                    return Ok(i32::from(status.as_u16()));
                 }
                 let bytes = resp.bytes().context("fetch_bytes: read body failed")?;
                 let vec = bytes.to_vec();
@@ -597,16 +645,22 @@ mod wasmtime_runner {
             state.last_fetch = Some(start.elapsed());
         }
 
-        let buf_ptr = alloc_fn.call(&mut *caller, body.len() as u32)?;
+        let body_len =
+            u32::try_from(body.len()).context("fetch_bytes: response body too large for wasm")?;
+        let buf_ptr = alloc_fn.call(&mut *caller, body_len)?;
         if buf_ptr == 0 {
             return Ok(-1);
         }
-        memory.write(&mut *caller, buf_ptr as usize, &body)?;
-        memory.write(&mut *caller, buf_ptr_out as usize, &buf_ptr.to_le_bytes())?;
+        memory.write(&mut *caller, usize::try_from(buf_ptr)?, &body)?;
         memory.write(
             &mut *caller,
-            buf_len_out as usize,
-            &(body.len() as u32).to_le_bytes(),
+            usize::try_from(buf_ptr_out)?,
+            &buf_ptr.to_le_bytes(),
+        )?;
+        memory.write(
+            &mut *caller,
+            usize::try_from(buf_len_out)?,
+            &body_len.to_le_bytes(),
         )?;
         Ok(0)
     }
@@ -619,20 +673,27 @@ mod wasmtime_runner {
         resolve_url: &TypedFunc<(u32, u32, u32, u32, u32, u32), u32>,
         spec: &Spec,
     ) -> Result<Option<String>> {
-        let spec_len = spec.spec.len() as u32;
+        let spec_len =
+            u32::try_from(spec.spec.len()).context("spec too large for wasm linear memory")?;
         let spec_ptr = alloc.call(&mut *store, spec_len)?;
         if spec_ptr == 0 {
             bail!("alloc(spec) returned null");
         }
-        memory.write(&mut *store, spec_ptr as usize, spec.spec.as_bytes())?;
+        memory.write(
+            &mut *store,
+            usize::try_from(spec_ptr)?,
+            spec.spec.as_bytes(),
+        )?;
 
-        let (target_ptr, target_len) = if let Some(t) = spec.target {
-            let p = alloc.call(&mut *store, t.len() as u32)?;
-            if p == 0 {
+        let (target_ptr, target_len) = if let Some(target) = spec.target {
+            let target_len =
+                u32::try_from(target.len()).context("target too large for wasm linear memory")?;
+            let ptr = alloc.call(&mut *store, target_len)?;
+            if ptr == 0 {
                 bail!("alloc(target) returned null");
             }
-            memory.write(&mut *store, p as usize, t.as_bytes())?;
-            (p, t.len() as u32)
+            memory.write(&mut *store, usize::try_from(ptr)?, target.as_bytes())?;
+            (ptr, target_len)
         } else {
             (0, 0)
         };
@@ -649,8 +710,8 @@ mod wasmtime_runner {
         let output = if n == 0 {
             None
         } else {
-            let mut buf = vec![0u8; n as usize];
-            memory.read(&*store, out_ptr as usize, &mut buf)?;
+            let mut buf = vec![0u8; usize::try_from(n)?];
+            memory.read(&*store, usize::try_from(out_ptr)?, &mut buf)?;
             Some(String::from_utf8(buf).context("resolve_url returned non-UTF8 bytes")?)
         };
 
@@ -670,20 +731,27 @@ mod wasmtime_runner {
         render_spec: &TypedFunc<(u32, u32, u32, u32, u32, u32), i32>,
         spec: &Spec,
     ) -> Result<String> {
-        let spec_len = spec.spec.len() as u32;
+        let spec_len =
+            u32::try_from(spec.spec.len()).context("spec too large for wasm linear memory")?;
         let spec_ptr = alloc.call(&mut *store, spec_len)?;
         if spec_ptr == 0 {
             bail!("alloc(spec) returned null");
         }
-        memory.write(&mut *store, spec_ptr as usize, spec.spec.as_bytes())?;
+        memory.write(
+            &mut *store,
+            usize::try_from(spec_ptr)?,
+            spec.spec.as_bytes(),
+        )?;
 
-        let (target_ptr, target_len) = if let Some(t) = spec.target {
-            let p = alloc.call(&mut *store, t.len() as u32)?;
-            if p == 0 {
+        let (target_ptr, target_len) = if let Some(target) = spec.target {
+            let target_len =
+                u32::try_from(target.len()).context("target too large for wasm linear memory")?;
+            let ptr = alloc.call(&mut *store, target_len)?;
+            if ptr == 0 {
                 bail!("alloc(target) returned null");
             }
-            memory.write(&mut *store, p as usize, t.as_bytes())?;
-            (p, t.len() as u32)
+            memory.write(&mut *store, usize::try_from(ptr)?, target.as_bytes())?;
+            (ptr, target_len)
         } else {
             (0, 0)
         };
@@ -693,7 +761,7 @@ mod wasmtime_runner {
         if slot_ptr == 0 {
             bail!("alloc(slots) returned null");
         }
-        memory.write(&mut *store, slot_ptr as usize, &[0u8; 8])?;
+        memory.write(&mut *store, usize::try_from(slot_ptr)?, &[0u8; 8])?;
 
         let rc = render_spec.call(
             &mut *store,
@@ -711,11 +779,11 @@ mod wasmtime_runner {
         }
 
         let mut slots = [0u8; 8];
-        memory.read(&*store, slot_ptr as usize, &mut slots)?;
+        memory.read(&*store, usize::try_from(slot_ptr)?, &mut slots)?;
         let out_ptr = u32::from_le_bytes(slots[0..4].try_into().unwrap());
         let out_len = u32::from_le_bytes(slots[4..8].try_into().unwrap());
-        let mut buf = vec![0u8; out_len as usize];
-        memory.read(&*store, out_ptr as usize, &mut buf)?;
+        let mut buf = vec![0u8; usize::try_from(out_len)?];
+        memory.read(&*store, usize::try_from(out_ptr)?, &mut buf)?;
         let md = String::from_utf8(buf).context("render_spec returned non-UTF8 bytes")?;
 
         free.call(&mut *store, (spec_ptr, spec_len))?;

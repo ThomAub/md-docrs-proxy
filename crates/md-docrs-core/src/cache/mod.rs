@@ -5,13 +5,13 @@ use std::sync::Arc;
 #[cfg(feature = "hybrid-cache")]
 use serde::{Deserialize, Serialize};
 
-mod memory;
 #[cfg(feature = "hybrid-cache")]
 mod hybrid;
+mod memory;
 
-pub use memory::InMemoryCache;
 #[cfg(feature = "hybrid-cache")]
 pub use hybrid::{FoyerHybridCache, FoyerHybridCacheConfig};
+pub use memory::InMemoryCache;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "hybrid-cache", derive(Serialize, Deserialize))]

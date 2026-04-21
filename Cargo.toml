@@ -3,13 +3,19 @@ members = [".", "rust-wasm", "wasm"]
 default-members = ["."]
 resolver = "3"
 
-[package]
-name = "md_docrs_proxy"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "CLI and HTTP proxy that renders docs.rs rustdoc JSON as Markdown"
 repository = "https://github.com/ThomAub/md-docrs-proxy"
 homepage = "https://github.com/ThomAub/md-docrs-proxy"
+
+[package]
+name = "md_docrs_proxy"
+version.workspace = true
+edition.workspace = true
+description = "CLI and HTTP proxy that renders docs.rs rustdoc JSON as Markdown"
+repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "md-docrs"
@@ -89,7 +95,11 @@ lto = "thin"
 formula = "md-docrs"
 
 [workspace.metadata.release]
-publish = false
+shared-version = true
+publish = true
 push = false
 tag-name = "v{{version}}"
 pre-release-commit-message = "chore: release {{crate_name}} {{version}}"
+
+[package.metadata.release]
+release = true

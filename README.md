@@ -59,12 +59,24 @@ git push origin v0.1.0
 
 This repository configures `cargo-release` to:
 
+- update the shared Rust workspace version in one place
 - tag releases as `v{{version}}`
-- skip crates.io publishing by default
 - skip remote pushes by default
 
+For this non-virtual workspace, use `--workspace` so `cargo-release` updates the
+shared version for all Rust workspace members while only publishing the root
+crate that is actually publishable:
+
+```sh
+# preview
+cargo release 0.2.0 --workspace
+
+# release commit + tag + crates.io publish, but keep the remote push explicit
+cargo release 0.2.0 --workspace --execute --no-push
+```
+
 That keeps the final push explicit while still letting `cargo-release` handle
-the release commit and tag creation.
+the version bump, release commit, tag creation, and crates.io publish.
 
 Repository prerequisites:
 

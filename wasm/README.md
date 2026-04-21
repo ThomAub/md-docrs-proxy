@@ -1,114 +1,73 @@
-# wasm/ — side-by-side comparison harness
+# wasm/
 
-Runs the Zig and Rust wasm builds of `resolve_url` through the exact same
-sequence of specs and reports:
+Workspace-level WASM staging for artifact comparison.
 
-- artifact size
-- resolved URL (parity check — every artifact must produce byte-identical output)
-- median and p95 per-call latency
-- raw Rust vs `wasm-opt -Oz` size comparison for the same build flavor
+This directory is not a Rust crate. It only exists to:
 
-Default runtime is embedded **wasmtime** (crate). The `wasmer` cargo feature
-swaps in the **wasmer** crate as an alternate host. Both are in-process
-embeddings, not the `wasmtime` / `wasmer` CLI binaries.
+- build and stage Zig and Rust `.wasm` artifacts
+- keep staged outputs under `wasm/artifacts/`
+- document the comparison flow
 
-## Layout
+The comparison binary lives in `crates/md-docrs-wasm-compare`.
 
-```
-wasm/
-├── Cargo.toml          # md-docrs-wasm-compare (workspace member)
-├── src/main.rs         # harness: loads wasm, drives resolve_url, reports
-├── build.sh            # builds zig + rust wasms and stages them in artifacts/
-├── artifacts/          # .gitignored — populated by build.sh
-│   ├── zig-minimal.wasm
-│   ├── rust-minimal.wasm
-│   ├── rust-minimal-opt.wasm
-│   ├── rust-full.wasm
-│   └── rust-full-opt.wasm
-└── README.md
+## What it contains
+
+- `build.sh` — builds and stages available artifacts
+- `artifacts/` — staged `.wasm` files used by the comparison harness
+- `README.md` — this file
+
+## Artifact workflow
+
+From the repo root:
+
+```/dev/null/wasm-compare.sh#L1-2
+./wasm/build.sh
+cargo run -p md-docrs-wasm-compare -- --offline
 ```
 
-## Quick start
+`build.sh` does this:
 
-```sh
-# From repo root.
-./wasm/build.sh                          # produces artifacts/*.wasm
-cargo run -p md-docrs-wasm-compare       # default: wasmtime, 200 iterations
-```
+- builds Zig minimal WASM
+- attempts Zig full WASM and skips it cleanly if unsupported
+- builds Rust minimal WASM from `crates/md-docrs-rust-wasm`
+- builds Rust full WASM from `crates/md-docrs-rust-wasm`
+- runs `wasm-opt -Oz` on Rust artifacts
+- copies staged outputs into `wasm/artifacts/`
 
-Sample output:
+## Expected staged files
 
-```
-artifact            bytes   flavor
--------------- ---------- --------
-zig-minimal          6775  minimal
-rust-minimal        36336  minimal
-rust-minimal-opt    25541  minimal
-rust-full          486387     full
-rust-full-opt      361606     full
+The harness looks for these filenames:
 
-spec: tokio@1.52.1::sync::Mutex
-artifact        output                                            median µs      p95 µs
---------------  ------------------------------------------------  ---------  ----------
-zig             https://docs.rs/crate/tokio/1.52.1/json/57.zst            7           8
-rust-minimal    https://docs.rs/crate/tokio/1.52.1/json/57.zst            9           9
-rust-full       https://docs.rs/crate/tokio/1.52.1/json/57.zst            9           9
-```
+- `zig-minimal.wasm`
+- `zig-full.wasm`
+- `rust-minimal.wasm`
+- `rust-minimal-opt.wasm`
+- `rust-full.wasm`
+- `rust-full-opt.wasm`
 
-All three artifacts must return byte-identical URLs for every spec — that is
-the ABI parity check. Per-call latency includes three `alloc`s, one
-`resolve_url`, three `free`s, plus one `Memory::write` per input and one
-`Memory::read` for the output.
+Missing files are skipped.
 
-## Flags
+## Required tools
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--runtime wasmtime\|wasmer` | `wasmtime` | Embedded host. `wasmer` requires `--features wasmer`. |
-| `--iterations N` | 200 | Hot-loop samples per (artifact, spec) cell. |
-| `--artifacts-dir PATH` | `wasm/artifacts` | Where to look for `zig-minimal.wasm`, `zig-full.wasm`, `rust-minimal.wasm`, `rust-minimal-opt.wasm`, `rust-full.wasm`, and `rust-full-opt.wasm`. |
+You need:
 
-Any subset of the expected `.wasm` files may be missing — the harness just skips those rows.
+- Rust with `wasm32-unknown-unknown`
+- Zig
+- `wasm-opt`
 
-## Wasmer (optional)
+## Related paths
 
-```sh
-cargo run -p md-docrs-wasm-compare --features wasmer -- --runtime wasmer
-```
+- `crates/md-docrs-rust-wasm` — Rust WASM module
+- `crates/md-docrs-wasm-compare` — host comparison harness
+- `zig/` — Zig implementation
+- `wasm/artifacts/` — staged outputs
 
-Wasmer pulls in its own Cranelift fork; first build is ~20s. Both runtimes
-agree on output, but wasmer's singlepass / cranelift defaults typically
-give different per-call timings than wasmtime's cranelift — useful for
-separating ABI cost from JIT cost.
+## Notes
 
-## Running the raw `.wasm` without the harness
+Keep `wasm/` boring:
 
-The CLI form of wasmtime / wasmer can't easily marshal strings across the
-ABI boundary, but you can still inspect the modules:
+- no Rust crate here
+- no shared library logic here
+- no comparison logic here
 
-```sh
-wasmtime compile wasm/artifacts/zig.wasm -o /tmp/zig.cwasm
-wasmer inspect wasm/artifacts/rust-minimal.wasm | head
-```
-
-For an end-to-end call you need host code that writes the spec into WASM
-memory and reads the result back — that's exactly what `src/main.rs` does.
-
-## Adding a new spec
-
-Edit `DEFAULT_SPECS` in `src/main.rs`. A spec is `(spec_string, optional_target)`
-and runs against every `.wasm` in the artifacts directory.
-
-## wasm-opt outputs
-
-`build.sh` now requires `wasm-opt` on `PATH` and stages optimized Rust artifacts
-next to the raw cargo outputs:
-
-- `rust-minimal.wasm` — `cargo build --profile wasm-release --no-default-features`
-- `rust-minimal-opt.wasm` — same module after `wasm-opt -Oz --strip-debug --strip-dwarf`
-- `rust-full.wasm` — `cargo build --profile wasm-release --no-default-features --features full`
-- `rust-full-opt.wasm` — same module after `wasm-opt -Oz --strip-debug --strip-dwarf`
-
-That lets the harness report the size delta between the unoptimized Rust wasm
-and the post-processed `wasm-opt` version while still checking `resolve_url`
-output parity across all staged artifacts.
+It is only the staging area for cross-language WASM artifacts.

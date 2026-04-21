@@ -5,11 +5,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use md_docrs_proxy::{Error, ItemSpec, cache::CrateCache, fetch::Fetcher, render_spec};
+use md_docrs_core::{Error, ItemSpec, RustdocFetcher, cache::CrateCache, render_spec};
 use std::sync::Arc;
 
 pub struct AppState {
-    pub fetcher: Fetcher,
+    pub fetcher: Arc<dyn RustdocFetcher>,
     pub cache: Arc<dyn CrateCache>,
 }
 
@@ -26,9 +26,10 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 async fn root() -> &'static str {
-    "md-docrs-proxy - GET /<crate>[/<version>][/<path>] for Markdown docs\n"
+    "md-docrs-server - GET /<crate>[/<version>][/<path>] for Markdown docs\n"
 }
 
+#[axum::debug_handler]
 async fn crate_root(
     State(state): State<Arc<AppState>>,
     Path(crate_name): Path<String>,
@@ -36,6 +37,7 @@ async fn crate_root(
     serve(&state, &crate_name, "latest", &[]).await
 }
 
+#[axum::debug_handler]
 async fn version_root(
     State(state): State<Arc<AppState>>,
     Path((crate_name, version)): Path<(String, String)>,
@@ -43,6 +45,7 @@ async fn version_root(
     serve(&state, &crate_name, &version, &[]).await
 }
 
+#[axum::debug_handler]
 async fn deep(
     State(state): State<Arc<AppState>>,
     Path((crate_name, version, rest)): Path<(String, String, String)>,
@@ -63,12 +66,15 @@ fn parse_rest(rest: &str) -> Vec<String> {
     if rest.is_empty() {
         return vec![];
     }
+
     let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
-    let mut out: Vec<String> = Vec::with_capacity(parts.len());
     if parts.is_empty() {
-        return out;
+        return vec![];
     }
+
     let last_idx = parts.len() - 1;
+    let mut out = Vec::with_capacity(parts.len());
+
     for (i, seg) in parts.iter().enumerate() {
         if i == last_idx {
             if let Some(name) = strip_kind_prefix(seg) {
@@ -80,11 +86,13 @@ fn parse_rest(rest: &str) -> Vec<String> {
             out.push((*seg).to_string());
         }
     }
+
     out
 }
 
 fn strip_kind_prefix(seg: &str) -> Option<String> {
     let seg = seg.strip_suffix(".html").unwrap_or(seg);
+
     for prefix in [
         "struct.",
         "enum.",
@@ -103,6 +111,7 @@ fn strip_kind_prefix(seg: &str) -> Option<String> {
             return Some(rest.to_string());
         }
     }
+
     None
 }
 
@@ -112,9 +121,6 @@ async fn serve(
     version: &str,
     path_segs: &[String],
 ) -> Response {
-    // docs.rs URLs embed the crate name as the first module segment (e.g.
-    // /serde/latest/serde/de/trait.Foo.html). Strip it so the spec path is
-    // relative to the crate root.
     let path: Vec<String> = match path_segs.split_first() {
         Some((head, tail)) if head == crate_name => tail.to_vec(),
         _ => path_segs.to_vec(),
@@ -127,31 +133,31 @@ async fn serve(
         path,
     };
 
-    match render_spec(&spec, &state.fetcher, state.cache.as_ref()).await {
+    match render_spec(&spec, state.fetcher.as_ref(), state.cache.as_ref()).await {
         Ok(body) => {
             let mut headers = HeaderMap::new();
             headers.insert(
                 header::CONTENT_TYPE,
                 "text/markdown; charset=utf-8".parse().unwrap(),
             );
-            let tokens = body.len() / 4;
-            headers.insert("x-markdown-tokens", tokens.to_string().parse().unwrap());
             headers.insert(header::VARY, "Accept".parse().unwrap());
+            headers.insert(
+                "x-markdown-tokens",
+                (body.len() / 4).to_string().parse().unwrap(),
+            );
             (StatusCode::OK, headers, body).into_response()
         }
-        Err(e) => error_to_response(&e),
+        Err(err) => error_to_response(&err),
     }
 }
 
-fn error_to_response(e: &Error) -> Response {
-    let status = match e {
+fn error_to_response(err: &Error) -> Response {
+    let status = match err {
         Error::NotFound(_) => StatusCode::NOT_FOUND,
         Error::InvalidSpec(_) => StatusCode::BAD_REQUEST,
-        Error::FormatVersionMismatch { .. }
-        | Error::Fetch(_)
-        | Error::Http(_)
-        | Error::Json(_)
-        | Error::Io(_) => StatusCode::BAD_GATEWAY,
+        Error::FormatVersionMismatch { .. } | Error::Fetch(_) | Error::Json(_) | Error::Io(_) => {
+            StatusCode::BAD_GATEWAY
+        }
     };
-    (status, e.to_string()).into_response()
+    (status, err.to_string()).into_response()
 }

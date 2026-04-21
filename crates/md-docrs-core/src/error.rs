@@ -21,8 +21,4 @@ pub enum Error {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[cfg(feature = "http")]
-    #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
 }

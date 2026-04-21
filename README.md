@@ -1,22 +1,60 @@
 # md-docrs-proxy
 
-Proxy that downloads rustdoc JSON from docs.rs and renders it as Markdown - built for LLM agents that waste tokens scraping docs.rs HTML.
+`md-docrs-proxy` resolves docs.rs rustdoc JSON URLs and renders rustdoc JSON as Markdown.
 
-## Build
+## Workspace
+
+Rust crates under `crates/`:
+
+- `md-docrs-core` — shared spec parsing, docs.rs resolution, rustdoc JSON rendering, cache traits
+- `md-docrs-fetch-http` — native HTTP fetcher for docs.rs
+- `md-docrs-cli` — native CLI that prints Markdown to stdout
+- `md-docrs-server` — native HTTP server
+- `md-docrs-worker` — Cloudflare Worker crate
+- `md-docrs-rust-wasm` — Rust `wasm32-unknown-unknown` export layer
+- `md-docrs-wasm-compare` — host-side WASM comparison harness
+
+Other top-level directories:
+
+- `zig/` — Zig implementation of the minimal `resolve_url` ABI, plus its Worker wrapper
+- `wasm/` — staged WASM artifacts and the repo-level build script
+
+## What each path owns
+
+- `crates/` owns the Rust implementation
+- `zig/` owns the minimal Zig implementation
+- `wasm/` owns artifact staging for Rust/Zig WASM comparison
+
+The top-level `wasm/` directory is not a Cargo crate.
+
+## Build and test
+
+Build the Rust workspace:
 
 ```sh
-cargo build --release
-# binary at ./target/release/md-docrs
+cargo build --workspace
+```
+
+Run the Rust tests:
+
+```sh
+cargo test --workspace
+```
+
+Run the Zig tests from the repo root:
+
+```sh
+zig build test --build-file zig/lib/build.zig
 ```
 
 ## Release packaging
 
 This repository is configured for [`cargo-dist`](https://axodotdev.github.io/cargo-dist/)
 releases of the `md-docrs` CLI. With `cargo-dist` 0.31, the generated release
-configuration lives in [`dist-workspace.toml`](dist-workspace.toml) and the CI
-workflow lives in [`.github/workflows/release.yml`](.github/workflows/release.yml).
+configuration lives in [dist-workspace.toml](/Users/thomas/dev/perso/github/md_docrs_proxy/dist-workspace.toml)
+and the CI workflow lives in [.github/workflows/release.yml](/Users/thomas/dev/perso/github/md_docrs_proxy/.github/workflows/release.yml).
 
-Install `dist` locally:
+Install the release tooling locally:
 
 ```sh
 cargo install cargo-dist --locked
@@ -36,47 +74,33 @@ dist build --tag vX.Y.Z
 ```
 
 Release tags should use the unified workspace form (`v0.1.0`, `v0.2.3`, ...).
-This workspace explicitly distributes only the root `md_docrs_proxy` package,
+This workspace distributes only the `md-docrs-cli` package with `cargo-dist`,
 which ships the `md-docrs` binary.
 
 Homebrew releases are published through the `ThomAub/homebrew-tap` tap managed
 by `cargo-dist`. There is intentionally no checked-in `HomebrewFormula/`
 directory in this repository.
 
-Before the first tagged release:
-
-```sh
-# preview the release mechanics without side effects
-cargo release 0.1.0
-
-# after the tree is clean, create the release commit/tag locally
-cargo release 0.1.0 --execute --no-publish --no-push
-
-# trigger the GitHub release workflow
-git push origin HEAD
-git push origin v0.1.0
-```
-
 This repository configures `cargo-release` to:
 
 - update the shared Rust workspace version in one place
-- tag releases as `v{{version}}`
-- skip remote pushes by default
+- create a single unified release tag as `v{{version}}`
+- publish the crates needed by the CLI release
+- keep the final remote push explicit
 
-For this non-virtual workspace, use `--workspace` so `cargo-release` updates the
-shared version for all Rust workspace members while only publishing the root
-crate that is actually publishable:
+For this virtual workspace, preview and execute releases from the repository root:
 
 ```sh
 # preview
-cargo release 0.2.0 --workspace
+cargo release 0.2.0
 
-# release commit + tag + crates.io publish, but keep the remote push explicit
-cargo release 0.2.0 --workspace --execute --no-push
+# version bump + release commit + tag + crates.io publish, but keep the push explicit
+cargo release 0.2.0 --execute --no-push
+
+# push the release commit and tag after validation
+git push origin main
+git push origin v0.2.0
 ```
-
-That keeps the final push explicit while still letting `cargo-release` handle
-the version bump, release commit, tag creation, and crates.io publish.
 
 Repository prerequisites:
 
@@ -90,87 +114,111 @@ Once a release has been published, install with Homebrew:
 brew install ThomAub/tap/md-docrs
 ```
 
-## CLI
+## Native CLI
 
-Spec grammar: `crate[@version][::path::to::item]`. Version defaults to `latest`.
+The CLI binary comes from `md-docrs-cli`.
 
-```sh
-md-docrs anyhow                                       # crate index, latest
-md-docrs anyhow::Error                                # item page
-md-docrs tokio::sync::Mutex                           # follows pub use re-exports
-md-docrs tokio@1.52.1::sync::Mutex                    # pinned version
-md-docrs --target x86_64-unknown-linux-gnu tokio::sync::Mutex
+Spec grammar:
+
+```text
+crate[@version][::path::to::item]
 ```
 
-Not every `@version` pin works: docs.rs has to have rebuilt rustdoc JSON at the supported format version (currently 57) for that exact release. Older releases predate the rebuild and return `502`; pin to a recent version or drop the pin to use `latest`.
-
-Markdown goes to stdout. Pipe it into whatever consumes it.
-
-## Server
-
-Mirrors docs.rs URLs, always replies with `text/markdown`:
+Examples:
 
 ```sh
-md-docrs serve --port 8080 --bind 127.0.0.1
+cargo run -p md-docrs-cli -- anyhow
+cargo run -p md-docrs-cli -- anyhow::Error
+cargo run -p md-docrs-cli -- tokio::sync::Mutex
+cargo run -p md-docrs-cli -- tokio@1.52.1::sync::Mutex
+cargo run -p md-docrs-cli -- --target x86_64-unknown-linux-gnu tokio::sync::Mutex
 ```
+
+Output is Markdown on stdout.
+
+## Native server
+
+The HTTP server binary comes from `md-docrs-server`.
+
+Start it locally:
 
 ```sh
-curl -s localhost:8080/anyhow                                       # crate root
-curl -s localhost:8080/anyhow/latest/anyhow/struct.Error.html       # item page
-curl -s localhost:8080/tokio/latest/tokio/sync/struct.Mutex.html    # re-exported item
+cargo run -p md-docrs-server -- --port 8080 --bind 127.0.0.1
 ```
 
-Response headers: `Content-Type: text/markdown; charset=utf-8`, `X-Markdown-Tokens` (byte-count/4 heuristic), `Vary: Accept`.
+Example requests:
 
-Status codes: 404 item not found, 400 bad spec, 502 upstream/decode error.
+```sh
+curl -sS http://127.0.0.1:8080/anyhow
+curl -sS http://127.0.0.1:8080/anyhow/latest/anyhow/struct.Error.html
+curl -sS http://127.0.0.1:8080/tokio/latest/tokio/sync/struct.Mutex.html
+curl -sS http://127.0.0.1:8080/healthz
+```
+
+Response behavior:
+
+- `200` with `Content-Type: text/markdown; charset=utf-8`
+- `400` for invalid specs
+- `404` for missing items
+- `502` for upstream, decode, or JSON errors
+
+Optional disk-backed cache support is available behind the `hybrid-cache` feature on `md-docrs-server`.
+
+## Rust WASM
+
+The Rust WASM crate lives at `crates/md-docrs-rust-wasm`.
+
+Minimal build, ABI-compatible with the Zig module:
+
+```sh
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-rust-wasm --no-default-features
+```
+
+Default build adds `render_markdown`:
+
+```sh
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-rust-wasm
+```
+
+Full build adds `render_markdown` and `render_spec`:
+
+```sh
+cargo build --profile wasm-release --target wasm32-unknown-unknown \
+  -p md-docrs-rust-wasm --no-default-features --features full
+```
+
+## Zig
+
+The Zig subtree implements the minimal `resolve_url` path.
+
+Common commands:
+
+```sh
+zig build --build-file zig/lib/build.zig
+zig build cli --build-file zig/lib/build.zig
+zig build test --build-file zig/lib/build.zig
+```
+
+See `zig/README.md` for details.
+
+## WASM comparison
+
+Stage artifacts, then run the comparison harness:
+
+```sh
+./wasm/build.sh
+cargo run -p md-docrs-wasm-compare -- --offline
+```
+
+See `wasm/README.md` for the workflow and supported flags.
 
 ## Notes
 
-- In-memory LRU cache (32 crates) per process. No disk cache.
-- v0 does not render trait impls, blanket impls, or source links.
-- Glob re-exports into external crates (e.g. `clap::Parser` from `clap_builder`) are not followed.
+Current limits:
 
-## WebAssembly builds
-
-Two same-ABI WASM modules live alongside the Rust library:
-
-- [`rust-wasm/`](rust-wasm/README.md) — `wasm32-unknown-unknown` build of
-  the pure pipeline (spec parse + resolve + render). Exports `alloc`,
-  `free`, `resolve_url`, and optionally `render_markdown`.
-- [`zig/`](zig/README.md) — Zig 0.16 port of the same surface (`resolve_url`
-  parity today; `render_markdown` is a follow-up). Ships a Cloudflare Worker
-  wrapper that can load either artifact unchanged.
-
-Build the Rust wasm:
-
-```sh
-# Minimal (resolve_url only — matches current Zig surface).
-cargo build --profile wasm-release --target wasm32-unknown-unknown \
-  -p md-docrs-wasm --no-default-features
-# Full (adds render_markdown, brings in serde_json + rustdoc-types).
-cargo build --profile wasm-release --target wasm32-unknown-unknown \
-  -p md-docrs-wasm
-# Optional shipped-size pass for Rust artifacts.
-wasm-opt -Oz --strip-debug --strip-dwarf \
-  -o wasm/artifacts/rust-minimal-opt.wasm \
-  target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm
-```
-
-The root crate's HTTP / server / CLI bits are gated behind `http`, `server`,
-and `cli` features (all on by default), so the pure pipeline compiles for
-`wasm32` without reqwest/tokio/axum/zstd.
-
-To compare the two modules side by side (size, output parity, per-call
-latency) under an embedded wasmtime or wasmer, see
-[`wasm/`](wasm/README.md):
-
-```sh
-./wasm/build.sh                          # builds zig + rust wasm, runs wasm-opt, stages them
-cargo run -p md-docrs-wasm-compare       # runs the table
-```
-
-## Logging
-
-```sh
-RUST_LOG=md_docrs_proxy=debug md-docrs serve
-```
+- in-memory cache by default for native paths
+- no disk cache unless `md-docrs-server` is built with `hybrid-cache`
+- partial rendering coverage; not all rustdoc surfaces are rendered yet
+- Zig currently covers URL resolution only, not fetch/decompress/render

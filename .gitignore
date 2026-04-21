@@ -1,4 +1,6 @@
 /target
+.wrangler
+crates/md-docrs-worker/.wrangler/
 zig/lib/zig-out/
 zig/lib/.zig-cache/
 zig/node_modules/

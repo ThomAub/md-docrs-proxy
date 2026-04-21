@@ -1,0 +1,17 @@
+[package]
+name = "md-docrs-fetch-http"
+version.workspace = true
+edition.workspace = true
+description = "HTTP rustdoc JSON fetcher for md-docrs"
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+md-docrs-core = { path = "../md-docrs-core", version = "0.1.0" }
+
+rustdoc-types.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+ureq = { version = "2", features = ["tls", "gzip"] }
+zstd.workspace = true

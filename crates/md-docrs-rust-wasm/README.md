@@ -1,198 +1,201 @@
 # md-docrs-rust-wasm
 
-Rust `wasm32-unknown-unknown` crate for the workspace's WASM-facing ABI.
+Rust `wasm32-unknown-unknown` export layer for this workspace.
 
-This crate is intentionally narrow:
+This crate wraps the shared Rust logic from `md-docrs-core` behind a small C-style ABI for host environments.
 
-- it exposes a small C-style ABI for hosts
-- it reuses shared Rust logic from `md-docrs-core`
-- it does not own the comparison harness
-- it does not own the Zig implementation
-- it does not own the Cloudflare Worker wrapper
+## What it exports
 
-That separation keeps boundaries clear:
+### Always available
 
-- `crates/md-docrs-core` — shared Rust parsing / resolution / rendering logic
-- `crates/md-docrs-rust-wasm` — Rust WASM export layer
-- `crates/md-docrs-wasm-compare` — host-side comparison harness
-- `zig/` — independent Zig implementation and Worker wrapper
-- `wasm/` — staged artifacts and helper build script
+- `alloc(len: u32) -> *mut u8`
+- `free(ptr: *mut u8, len: u32)`
+- `resolve_url(spec_ptr, spec_len, target_ptr, target_len, out_ptr, out_cap) -> u32`
 
-## Purpose
+These three exports match the Zig minimal WASM surface.
 
-`md-docrs-rust-wasm` builds a WebAssembly module that can be loaded by any host that understands its exported ABI.
+### With `render`
 
-Today it supports two scopes:
+- `render_markdown(json_ptr, json_len, spec_ptr, spec_len, target_ptr, target_len, len_out) -> *mut u8`
 
-- **minimal**: `resolve_url` only
-- **full**: `resolve_url` + `render_markdown`
+This lets a host pass rustdoc JSON into the module and receive rendered Markdown back.
 
-The minimal build is the direct Rust counterpart to the Zig WASM module.  
-The full build keeps the same base ABI and adds Markdown rendering.
+### With `render` + `fetch`
 
-## Exports
+- `render_spec(spec_ptr, spec_len, target_ptr, target_len, buf_ptr_out, buf_len_out) -> i32`
 
-The module exports:
+This is the full in-module pipeline:
 
-| Symbol | Signature | Notes |
+1. parse the spec
+2. build the docs.rs rustdoc JSON URL
+3. call the host-provided `fetch_bytes`
+4. zstd-decode the response
+5. parse rustdoc JSON
+6. resolve the requested item
+7. render Markdown
+
+## Features
+
+| Feature | Default | Purpose |
 | --- | --- | --- |
-| `alloc` | `(len: u32) -> *mut u8` | Allocates a buffer in WASM linear memory. Returns null on failure or `len == 0`. |
-| `free` | `(ptr: *mut u8, len: u32)` | Frees a buffer previously returned by `alloc`. Length must match. |
-| `resolve_url` | `(spec_ptr, spec_len, target_ptr, target_len, out_ptr, out_cap) -> u32` | Resolves a docs.rs rustdoc JSON URL into the caller-provided output buffer. Returns bytes written, or `0` on error. |
-| `render_markdown` | `(json_ptr, json_len, spec_ptr, spec_len, target_ptr, target_len, len_out: *mut u32) -> *mut u8` | Present in builds with the `render` feature. Returns a newly allocated Markdown buffer; caller must free it. Returns null on error. |
+| `render` | yes | Enables JSON-to-Markdown rendering and exports `render_markdown` |
+| `fetch` | no | Enables host-imported fetch + in-WASM zstd decode used by `render_spec` |
+| `full` | no | Convenience alias for `render` + `fetch` |
 
 ## Build modes
 
-### Minimal build
+### Minimal
 
-This is the smallest Rust build and the one intended for direct parity with Zig.
-
-It exposes:
+Exports only:
 
 - `alloc`
 - `free`
 - `resolve_url`
 
-Build it with:
+Build:
 
-```sh
+```/dev/null/minimal.sh#L1-2
 cargo build --profile wasm-release --target wasm32-unknown-unknown \
   -p md-docrs-rust-wasm --no-default-features
 ```
 
-Output:
+### Default
 
-```sh
-target/wasm32-unknown-unknown/wasm-release/md_docrs_rust_wasm.wasm
-```
-
-### Default build
-
-The default feature set includes `render`.
-
-It exposes:
+Exports:
 
 - `alloc`
 - `free`
 - `resolve_url`
 - `render_markdown`
 
-Build it with:
+Build:
 
-```sh
+```/dev/null/default.sh#L1-2
 cargo build --profile wasm-release --target wasm32-unknown-unknown \
   -p md-docrs-rust-wasm
 ```
 
-### Full build
+### Full
 
-The crate also defines a convenience `full` feature:
+Exports:
 
-- `render`
-- `fetch`
+- `alloc`
+- `free`
+- `resolve_url`
+- `render_markdown`
+- `render_spec`
 
-Build it with:
+Build:
 
-```sh
+```/dev/null/full.sh#L1-2
 cargo build --profile wasm-release --target wasm32-unknown-unknown \
   -p md-docrs-rust-wasm --no-default-features --features full
 ```
 
-Use this when you want the full WASM-oriented surface used by the repo-level comparison flow.
+Output path:
 
-## Features
+```/dev/null/output.txt#L1-1
+target/wasm32-unknown-unknown/wasm-release/md_docrs_rust_wasm.wasm
+```
 
-| Feature | Default | Meaning |
-| --- | --- | --- |
-| `render` | yes | Enables JSON-to-Markdown rendering via `serde_json` and `rustdoc-types`, and exports `render_markdown`. |
-| `fetch` | no | Enables fetch/decompression-related functionality needed by the full WASM pipeline. |
-| `full` | no | Convenience alias for `render` + `fetch`. |
+## ABI notes
 
-## Workspace boundaries
+### Memory
 
-This crate should stay lean and focused on the ABI layer.
+- `alloc` returns a pointer in WASM linear memory
+- `free` must be called with the exact pointer and length originally allocated
+- `alloc(0)` returns null
+- most failures are reported as `0`, null, or a negative status code depending on the export
 
-### It should contain
+### `resolve_url`
 
-- exported WASM ABI functions
-- memory handling for host/WASM interaction
-- thin adapters into `md-docrs-core`
-- feature-gated WASM-specific integration logic
+`resolve_url` parses:
 
-### It should not contain
+```/dev/null/spec.txt#L1-1
+crate[@version][::path::to::item]
+```
 
-- CLI code
-- server code
-- Cloudflare Worker code
-- comparison harness code
-- Zig-specific code
-- repo-level artifact staging logic
+If `target_len == 0`, no explicit target triple is used.
 
-Those live elsewhere on purpose.
+On success it writes the docs.rs rustdoc JSON URL into the caller-provided output buffer and returns the number of bytes written.
 
-## Relationship to Zig
+It returns `0` on failure, including:
 
-The Zig implementation lives under `zig/`.
+- invalid UTF-8
+- invalid spec
+- output buffer too small
 
-The goal is to keep the **minimal ABI compatible** across both implementations so the same host-side logic can load either artifact with minimal or no changes.
+### `render_markdown`
 
-That means the Rust minimal build should stay disciplined:
+`render_markdown` expects the host to provide:
 
-- small export surface
-- stable memory protocol
-- no unnecessary host assumptions
+- rustdoc JSON bytes
+- a spec
+- an optional target triple
+- a writable `len_out`
 
-## Comparison workflow
+On success it returns a newly allocated Markdown buffer and writes its size to `*len_out`.
 
-This crate does not run comparisons itself.
+The caller owns the returned buffer and must release it with `free(ptr, len)`.
 
-For side-by-side Rust vs Zig comparison, use the repo-level flow:
+It returns null on failure.
 
-- `wasm/build.sh` — builds and stages artifacts into `wasm/artifacts/`
-- `crates/md-docrs-wasm-compare` — loads those artifacts and benchmarks / checks parity
+### `render_spec`
 
-Typical flow from the repo root:
+`render_spec` requires a host import:
 
-```sh
+```/dev/null/fetch-bytes.txt#L1-5
+fetch_bytes(
+  url_ptr: *const u8,
+  url_len: u32,
+  buf_ptr_out: *mut u32,
+  buf_len_out: *mut u32,
+) -> i32
+```
+
+The host is expected to:
+
+1. fetch the URL
+2. allocate a buffer inside WASM memory using exported `alloc`
+3. write the response body into that buffer
+4. store the pointer and length into the provided out-slots
+
+Return `0` for success and non-zero for failure.
+
+On success, `render_spec` writes an allocated Markdown buffer to `*buf_ptr_out` and `*buf_len_out`, then returns `0`.
+
+### `render_spec` status codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `-1` | Allocation failure |
+| `-2` | Host fetch failed |
+| `-3` | zstd decode failed |
+| `-4` | JSON parse failed |
+| `-5` | Spec parse failure, resolve miss, or URL too long |
+| `-6` | Output pointer or length could not be written |
+
+## Relationship to the rest of the repo
+
+- `crates/md-docrs-core` contains the shared Rust parsing, resolution, and rendering logic
+- `crates/md-docrs-wasm-compare` contains the host-side comparison harness
+- `zig/` contains the independent Zig implementation of the minimal ABI
+- `wasm/` contains the repo-level staging script and staged artifacts
+
+This crate should stay focused on the Rust WASM ABI layer.
+
+## Typical workflow
+
+Build and stage artifacts from the repo root:
+
+```/dev/null/workflow.sh#L1-2
 ./wasm/build.sh
 cargo run -p md-docrs-wasm-compare -- --offline
 ```
 
-## Optimization
-
-If `wasm-opt` is installed, you can post-process the built artifact manually:
-
-```sh
-wasm-opt -Oz --strip-debug --strip-dwarf \
-  -o target/wasm32-unknown-unknown/wasm-release/md_docrs_rust_wasm.opt.wasm \
-  target/wasm32-unknown-unknown/wasm-release/md_docrs_rust_wasm.wasm
-```
-
-In normal repo usage, the top-level `wasm/build.sh` script handles staging optimized artifacts.
-
 ## Tests
 
-Host tests can still exercise the crate logic:
-
-```sh
+```/dev/null/tests.sh#L1-1
 cargo test -p md-docrs-rust-wasm
 ```
-
-## Design guidance
-
-To keep this crate lean over time:
-
-- prefer pushing reusable logic down into `md-docrs-core`
-- keep exported functions thin
-- keep features explicit
-- avoid mixing host/runtime concerns into the ABI layer
-- treat code size as a product constraint for the minimal build
-
-If a future change is only needed for:
-
-- CLI behavior
-- HTTP serving
-- Worker deployment
-- harness benchmarking
-
-then it probably belongs outside this crate.

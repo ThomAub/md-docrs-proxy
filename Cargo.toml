@@ -7,6 +7,9 @@ resolver = "3"
 name = "md_docrs_proxy"
 version = "0.1.0"
 edition = "2024"
+description = "CLI and HTTP proxy that renders docs.rs rustdoc JSON as Markdown"
+repository = "https://github.com/ThomAub/md-docrs-proxy"
+homepage = "https://github.com/ThomAub/md-docrs-proxy"
 
 [[bin]]
 name = "md-docrs"
@@ -76,3 +79,17 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[package.metadata.dist]
+formula = "md-docrs"
+
+[workspace.metadata.release]
+publish = false
+push = false
+tag-name = "v{{version}}"
+pre-release-commit-message = "chore: release {{crate_name}} {{version}}"

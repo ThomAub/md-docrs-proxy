@@ -9,6 +9,75 @@ cargo build --release
 # binary at ./target/release/md-docrs
 ```
 
+## Release packaging
+
+This repository is configured for [`cargo-dist`](https://axodotdev.github.io/cargo-dist/)
+releases of the `md-docrs` CLI. With `cargo-dist` 0.31, the generated release
+configuration lives in [`dist-workspace.toml`](dist-workspace.toml) and the CI
+workflow lives in [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+Install `dist` locally:
+
+```sh
+cargo install cargo-dist --locked
+cargo install cargo-release --locked
+```
+
+Validate what the release workflow will build:
+
+```sh
+dist plan --tag vX.Y.Z
+```
+
+Build the current platform's release artifacts and installers locally:
+
+```sh
+dist build --tag vX.Y.Z
+```
+
+Release tags should use the unified workspace form (`v0.1.0`, `v0.2.3`, ...).
+This workspace explicitly distributes only the root `md_docrs_proxy` package,
+which ships the `md-docrs` binary.
+
+Homebrew releases are published through the `ThomAub/homebrew-tap` tap managed
+by `cargo-dist`. There is intentionally no checked-in `HomebrewFormula/`
+directory in this repository.
+
+Before the first tagged release:
+
+```sh
+# preview the release mechanics without side effects
+cargo release 0.1.0
+
+# after the tree is clean, create the release commit/tag locally
+cargo release 0.1.0 --execute --no-publish --no-push
+
+# trigger the GitHub release workflow
+git push origin HEAD
+git push origin v0.1.0
+```
+
+This repository configures `cargo-release` to:
+
+- tag releases as `v{{version}}`
+- skip crates.io publishing by default
+- skip remote pushes by default
+
+That keeps the final push explicit while still letting `cargo-release` handle
+the release commit and tag creation.
+
+Repository prerequisites:
+
+- Create the tap repository `ThomAub/homebrew-tap`.
+- Add a GitHub personal access token with `repo` scope as the
+  `HOMEBREW_TAP_TOKEN` secret in this repository.
+
+Once a release has been published, install with Homebrew:
+
+```sh
+brew install ThomAub/tap/md-docrs
+```
+
 ## CLI
 
 Spec grammar: `crate[@version][::path::to::item]`. Version defaults to `latest`.

@@ -30,21 +30,57 @@ zig/
 
 ## Build
 
+Everything runs from `zig/lib/`. `zig build` produces only the WASM artifact
+by default — the CLI and tests are explicit steps so `npm run build:wasm`
+stays focused.
+
 ```sh
-# WASM only (default target)
-cd zig/lib && zig build
+cd zig/lib
+
+# WASM (default step).
+zig build
 # -> zig-out/bin/md-docrs.wasm
 
-# Native CLI
-cd zig/lib && zig build cli
-./zig-out/bin/md-docrs-zig serde::de::Deserialize
+# Native CLI.
+zig build cli
+# -> zig-out/bin/md-docrs-zig
 
-# Tests (native, pull in spec.zig + url.zig + resolve.zig tests)
-cd zig/lib && zig build test
-
-# Run CLI through the build system
-cd zig/lib && zig build run -- tokio@1.52.1::sync::Mutex --target x86_64-unknown-linux-gnu
+# Unit tests (spec / url / resolve).
+zig build test
 ```
+
+## Native CLI
+
+`md-docrs-zig` wraps the same `resolve.resolveUrl` that the WASM build
+exports, so it's the fastest way to sanity-check a spec without spinning
+up the Worker.
+
+```sh
+cd zig/lib
+zig build cli
+
+# Run directly.
+./zig-out/bin/md-docrs-zig serde
+# https://docs.rs/crate/serde/latest/json/57.zst
+
+./zig-out/bin/md-docrs-zig 'tokio@1.52.1::sync::Mutex'
+# https://docs.rs/crate/tokio/1.52.1/json/57.zst
+
+./zig-out/bin/md-docrs-zig 'anyhow::Error' --target x86_64-unknown-linux-gnu
+# https://docs.rs/crate/anyhow/latest/x86_64-unknown-linux-gnu/json/57.zst
+
+./zig-out/bin/md-docrs-zig --help
+
+# Or run through the build system (rebuilds if needed, forwards args after --).
+zig build run -- 'tokio@1.52.1::sync::Mutex' --target x86_64-unknown-linux-gnu
+```
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | URL printed to stdout. |
+| 2 | Bad spec, missing `--target` value, or unknown argument (usage on stderr). |
 
 ## Worker
 
@@ -104,6 +140,12 @@ What we're comparing:
 - Instantiation + per-call latency in a Worker.
 - Cold-start cost (wrangler measures this).
 
-The Rust README has the current byte counts. Porting `render_markdown` to
-Zig is the interesting follow-up — that's where serde_json / rustdoc-types
-vs. `std.json` + hand-written types becomes a real apples-to-apples test.
+For a host-neutral comparison that doesn't involve wrangler, use the
+[`wasm/`](../wasm/README.md) harness at the repo root. It builds both
+modules, runs the exact same specs through each inside embedded wasmtime
+(optionally wasmer), and reports byte size, output parity, and median / p95
+per-call latency in a single table.
+
+Porting `render_markdown` to Zig is the interesting follow-up — that's
+where serde_json / rustdoc-types vs. `std.json` + hand-written types
+becomes a real apples-to-apples test.

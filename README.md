@@ -69,6 +69,10 @@ cargo build --profile wasm-release --target wasm32-unknown-unknown \
 # Full (adds render_markdown, brings in serde_json + rustdoc-types).
 cargo build --profile wasm-release --target wasm32-unknown-unknown \
   -p md-docrs-wasm
+# Optional shipped-size pass for Rust artifacts.
+wasm-opt -Oz --strip-debug --strip-dwarf \
+  -o wasm/artifacts/rust-minimal-opt.wasm \
+  target/wasm32-unknown-unknown/wasm-release/md_docrs_wasm.wasm
 ```
 
 The root crate's HTTP / server / CLI bits are gated behind `http`, `server`,
@@ -80,7 +84,7 @@ latency) under an embedded wasmtime or wasmer, see
 [`wasm/`](wasm/README.md):
 
 ```sh
-./wasm/build.sh                          # builds zig + rust wasm, stages them
+./wasm/build.sh                          # builds zig + rust wasm, runs wasm-opt, stages them
 cargo run -p md-docrs-wasm-compare       # runs the table
 ```
 

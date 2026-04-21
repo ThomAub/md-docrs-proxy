@@ -10,17 +10,20 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Default: both surfaces.
-#   - `resolve_url` alone is the minimal parity build vs Zig (spec parse + URL).
-#   - `render` pulls in serde_json + rustdoc-types for the full JSON→Markdown
-#     pipeline. This roughly triples the .wasm size; toggle off for
-#     size-parity size comparisons.
+# Default: render only (host-driven fetch + decompression). Kept on by
+# default so `cargo test -p md-docrs-wasm` exercises the renderer.
+#   - `render` pulls in serde_json + rustdoc-types for JSON -> Markdown.
+#   - `fetch` adds the host `env.fetch_bytes` import and in-WASM zstd
+#     decoding (via ruzstd) so the module owns the full pipeline.
+#   - `full` is the convenience alias used by `wasm/build.sh`.
 default = ["render"]
 render = ["dep:serde_json", "dep:rustdoc-types"]
+fetch = ["dep:ruzstd"]
+full = ["render", "fetch"]
 
 [dependencies]
 # Pulls in only the pure pipeline (spec / resolve / render / cache).
 md_docrs_proxy = { path = "..", default-features = false }
 rustdoc-types = { version = "0.57", optional = true }
 serde_json = { version = "1", optional = true }
-
+ruzstd = { version = "0.8", optional = true, default-features = false, features = ["std"] }

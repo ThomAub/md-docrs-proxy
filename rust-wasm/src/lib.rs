@@ -2,9 +2,22 @@
 //!
 //! Exposes the same `alloc` / `free` / `resolve_url` trio as the Zig build
 //! (`zig/lib/wasm.zig`) so both modules are drop-in interchangeable behind
-//! the same Cloudflare Worker. Adds `render_markdown`, which takes an already
-//! decoded rustdoc JSON blob plus a spec and returns rendered Markdown — the
-//! piece the Zig side will eventually mirror for the full-pipeline benchmark.
+//! the same Cloudflare Worker. Adds `render_markdown` (host-fed JSON) and
+//! `render_spec` (host-imported fetch + in-WASM zstd decode + render) for
+//! the full pipeline comparison.
+//!
+//! ## Error codes returned by `render_spec`
+//! The Zig full WASM build uses the same values.
+//!
+//! | code | meaning |
+//! | ---- | ------- |
+//! |  0   | success (ptr + len written to out-slots) |
+//! | -1   | alloc failure |
+//! | -2   | host `fetch_bytes` returned non-zero |
+//! | -3   | zstd decode failure |
+//! | -4   | JSON parse failure |
+//! | -5   | spec parse / resolve miss / URL too long |
+//! | -6   | output pointer write failure |
 
 use md_docrs_proxy::ItemSpec;
 #[cfg(feature = "render")]
@@ -31,7 +44,6 @@ pub extern "C" fn alloc(len: u32) -> *mut u8 {
     let Some(layout) = layout_for(len as usize) else {
         return ptr::null_mut();
     };
-    // SAFETY: layout has non-zero size (checked above).
     unsafe { rust_alloc(layout) }
 }
 
@@ -50,6 +62,36 @@ pub unsafe extern "C" fn free(ptr: *mut u8, len: u32) {
     unsafe { dealloc(ptr, layout) };
 }
 
+fn build_docs_rs_url(spec: &ItemSpec) -> String {
+    match spec.target.as_deref() {
+        Some(t) => format!(
+            "{DOCS_RS_BASE}/crate/{}/{}/{}/json/{FORMAT_VERSION}.zst",
+            spec.crate_name, spec.version, t
+        ),
+        None => format!(
+            "{DOCS_RS_BASE}/crate/{}/{}/json/{FORMAT_VERSION}.zst",
+            spec.crate_name, spec.version
+        ),
+    }
+}
+
+fn parse_spec_with_target(
+    spec_ptr: *const u8,
+    spec_len: u32,
+    target_ptr: *const u8,
+    target_len: u32,
+) -> Option<ItemSpec> {
+    let spec_bytes = unsafe { slice::from_raw_parts(spec_ptr, spec_len as usize) };
+    let spec_str = std::str::from_utf8(spec_bytes).ok()?;
+    let mut spec = ItemSpec::parse(spec_str).ok()?;
+    if target_len > 0 {
+        let t = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
+        let t_str = std::str::from_utf8(t).ok()?;
+        spec = spec.with_target(Some(t_str.to_string()));
+    }
+    Some(spec)
+}
+
 /// Parse `spec` and write the docs.rs rustdoc JSON URL into `out_ptr`.
 /// `target_len == 0` means "use the default host target".
 /// Returns bytes written, or 0 on any failure.
@@ -66,33 +108,10 @@ pub unsafe extern "C" fn resolve_url(
     out_ptr: *mut u8,
     out_cap: u32,
 ) -> u32 {
-    let spec_bytes = unsafe { slice::from_raw_parts(spec_ptr, spec_len as usize) };
-    let Ok(spec_str) = std::str::from_utf8(spec_bytes) else {
+    let Some(spec) = parse_spec_with_target(spec_ptr, spec_len, target_ptr, target_len) else {
         return 0;
     };
-    let Ok(mut spec) = ItemSpec::parse(spec_str) else {
-        return 0;
-    };
-
-    if target_len > 0 {
-        let t = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
-        let Ok(t_str) = std::str::from_utf8(t) else {
-            return 0;
-        };
-        spec = spec.with_target(Some(t_str.to_string()));
-    }
-
-    let url = match spec.target.as_deref() {
-        Some(t) => format!(
-            "{DOCS_RS_BASE}/crate/{}/{}/{}/json/{FORMAT_VERSION}.zst",
-            spec.crate_name, spec.version, t
-        ),
-        None => format!(
-            "{DOCS_RS_BASE}/crate/{}/{}/json/{FORMAT_VERSION}.zst",
-            spec.crate_name, spec.version
-        ),
-    };
-
+    let url = build_docs_rs_url(&spec);
     let bytes = url.as_bytes();
     if bytes.len() > out_cap as usize {
         return 0;
@@ -114,9 +133,6 @@ pub unsafe extern "C" fn resolve_url(
 /// miss, alloc failure). `*len_out` is only meaningful when the return
 /// value is non-null.
 ///
-/// Output length is not known in advance (varies with the item's doc size)
-/// so we allocate here rather than asking the caller to guess a bound.
-///
 /// # Safety
 /// All input (ptr, len) pairs must describe valid readable slices. `len_out`
 /// must be a writable `u32`.
@@ -132,21 +148,9 @@ pub unsafe extern "C" fn render_markdown(
     len_out: *mut u32,
 ) -> *mut u8 {
     let json = unsafe { slice::from_raw_parts(json_ptr, json_len as usize) };
-    let spec_bytes = unsafe { slice::from_raw_parts(spec_ptr, spec_len as usize) };
-
-    let Ok(spec_str) = std::str::from_utf8(spec_bytes) else {
+    let Some(spec) = parse_spec_with_target(spec_ptr, spec_len, target_ptr, target_len) else {
         return ptr::null_mut();
     };
-    let Ok(mut spec) = ItemSpec::parse(spec_str) else {
-        return ptr::null_mut();
-    };
-    if target_len > 0 {
-        let t = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
-        let Ok(t_str) = std::str::from_utf8(t) else {
-            return ptr::null_mut();
-        };
-        spec = spec.with_target(Some(t_str.to_string()));
-    }
 
     let Ok(krate) = serde_json::from_slice::<Crate>(json) else {
         return ptr::null_mut();
@@ -160,7 +164,6 @@ pub unsafe extern "C" fn render_markdown(
     let Some(layout) = layout_for(bytes.len()) else {
         return ptr::null_mut();
     };
-    // SAFETY: non-zero layout.
     let out = unsafe { rust_alloc(layout) };
     if out.is_null() {
         return ptr::null_mut();
@@ -170,6 +173,115 @@ pub unsafe extern "C" fn render_markdown(
         *len_out = bytes.len() as u32;
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Full-pipeline entry. Imports `env.fetch_bytes` from the host and decodes
+// the zstd-compressed rustdoc JSON in-module.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "render", feature = "fetch"))]
+unsafe extern "C" {
+    /// Host-provided: perform an HTTP GET against `url` and hand back the raw
+    /// response body (still zstd-compressed, as served by docs.rs).
+    ///
+    /// The host allocates the destination buffer inside WASM memory by
+    /// calling the exported `alloc`, writes the body into it, then stores the
+    /// pointer at `*buf_ptr_out` and the length at `*buf_len_out`.
+    /// Returns 0 on success, non-zero on any HTTP / transport failure (no
+    /// buffer written in that case).
+    fn fetch_bytes(
+        url_ptr: *const u8,
+        url_len: u32,
+        buf_ptr_out: *mut u32,
+        buf_len_out: *mut u32,
+    ) -> i32;
+}
+
+#[cfg(all(feature = "render", feature = "fetch"))]
+fn zstd_decode(input: &[u8]) -> Option<Vec<u8>> {
+    use ruzstd::decoding::StreamingDecoder;
+    use std::io::Read;
+
+    let mut decoder = StreamingDecoder::new(input).ok()?;
+    let mut out = Vec::with_capacity(input.len() * 4);
+    decoder.read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+/// Full pipeline: parse spec → fetch via host → zstd decode → JSON parse →
+/// resolve → render. On success writes `(ptr, len)` of an `alloc`-owned
+/// Markdown buffer into `*buf_ptr_out` / `*buf_len_out` and returns 0.
+///
+/// See module docs for error codes.
+///
+/// # Safety
+/// All (ptr, len) pairs must describe valid slices; both `*_out` pointers
+/// must reference writable `u32` slots inside WASM linear memory.
+#[cfg(all(feature = "render", feature = "fetch"))]
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
+pub unsafe extern "C" fn render_spec(
+    spec_ptr: *const u8,
+    spec_len: u32,
+    target_ptr: *const u8,
+    target_len: u32,
+    buf_ptr_out: *mut u32,
+    buf_len_out: *mut u32,
+) -> i32 {
+    let Some(spec) = parse_spec_with_target(spec_ptr, spec_len, target_ptr, target_len) else {
+        return -5;
+    };
+    let url = build_docs_rs_url(&spec);
+
+    let mut resp_ptr: u32 = 0;
+    let mut resp_len: u32 = 0;
+    let rc = unsafe {
+        fetch_bytes(
+            url.as_ptr(),
+            url.len() as u32,
+            &mut resp_ptr,
+            &mut resp_len,
+        )
+    };
+    if rc != 0 {
+        return -2;
+    }
+    if resp_ptr == 0 || resp_len == 0 {
+        return -2;
+    }
+
+    // Take ownership of the host-written buffer; free it once decoded.
+    let compressed = unsafe { slice::from_raw_parts(resp_ptr as *const u8, resp_len as usize) };
+    let decoded = zstd_decode(compressed);
+    unsafe { free(resp_ptr as *mut u8, resp_len) };
+    let Some(json) = decoded else {
+        return -3;
+    };
+
+    let Ok(krate) = serde_json::from_slice::<Crate>(&json) else {
+        return -4;
+    };
+    drop(json);
+
+    let Ok(resolved) = resolve::resolve(&krate, &spec) else {
+        return -5;
+    };
+    let md = render::render(&krate, &resolved, &spec);
+
+    let bytes = md.as_bytes();
+    let Some(layout) = layout_for(bytes.len()) else {
+        return -1;
+    };
+    let out = unsafe { rust_alloc(layout) };
+    if out.is_null() {
+        return -1;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+        *buf_ptr_out = out as u32;
+        *buf_len_out = bytes.len() as u32;
+    }
+    0
 }
 
 #[cfg(test)]
@@ -261,4 +373,5 @@ mod tests {
             free(ptr, 64);
         }
     }
+
 }

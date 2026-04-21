@@ -191,7 +191,7 @@ impl KvCrateCache {
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    let kv = env.kv("EXAMPLE")?;
+    let kv = env.kv("KRATE_KV")?;
     let state = AppState {
         fetcher: Arc::new(WorkerFetcher::new()),
         cache: Arc::new(KvCrateCache::new(kv)),

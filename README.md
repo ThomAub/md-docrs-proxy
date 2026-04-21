@@ -75,6 +75,15 @@ The root crate's HTTP / server / CLI bits are gated behind `http`, `server`,
 and `cli` features (all on by default), so the pure pipeline compiles for
 `wasm32` without reqwest/tokio/axum/zstd.
 
+To compare the two modules side by side (size, output parity, per-call
+latency) under an embedded wasmtime or wasmer, see
+[`wasm/`](wasm/README.md):
+
+```sh
+./wasm/build.sh                          # builds zig + rust wasm, stages them
+cargo run -p md-docrs-wasm-compare       # runs the table
+```
+
 ## Logging
 
 ```sh

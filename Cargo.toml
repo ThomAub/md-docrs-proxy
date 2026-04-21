@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "rust-wasm"]
+members = [".", "rust-wasm", "wasm"]
 default-members = ["."]
 resolver = "3"
 

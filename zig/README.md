@@ -49,14 +49,14 @@ It does not own:
 
 From `zig/`:
 
-```/dev/null/zig-build-npm.sh#L1-2
+```bash
 npm install
 npm run build:wasm
 ```
 
 From `zig/lib/`:
 
-```/dev/null/zig-build-lib.sh#L1-3
+```bash
 zig build
 zig build cli
 zig build test
@@ -64,7 +64,7 @@ zig build test
 
 From the repo root:
 
-```/dev/null/zig-build-root.sh#L1-1
+```bash
 zig build test --build-file zig/lib/build.zig
 ```
 
@@ -72,14 +72,14 @@ zig build test --build-file zig/lib/build.zig
 
 Build:
 
-```/dev/null/zig-cli-build.sh#L1-2
+```bash
 cd zig/lib
 zig build cli
 ```
 
 Run:
 
-```/dev/null/zig-cli-run.sh#L1-4
+```bash
 ./zig-out/bin/md-docrs-zig serde
 ./zig-out/bin/md-docrs-zig 'tokio@1.52.1::sync::Mutex'
 ./zig-out/bin/md-docrs-zig 'anyhow::Error' --target x86_64-unknown-linux-gnu
@@ -88,13 +88,13 @@ zig build run -- 'tokio@1.52.1::sync::Mutex' --target x86_64-unknown-linux-gnu
 
 Usage:
 
-```/dev/null/zig-cli-usage.txt#L1-1
-md-docrs-zig <SPEC> [--target TRIPLE]
+```text
+md-docrs-zig &lt;SPEC&gt; [--target TRIPLE]
 ```
 
 Spec grammar:
 
-```/dev/null/spec.txt#L1-1
+```text
 crate[@version][::path::to::item]
 ```
 
@@ -106,7 +106,7 @@ Behavior:
 
 Examples of output:
 
-```/dev/null/zig-cli-output.txt#L1-3
+```text
 https://docs.rs/crate/serde/latest/json/57.zst
 https://docs.rs/crate/tokio/1.52.1/json/57.zst
 https://docs.rs/crate/anyhow/latest/x86_64-unknown-linux-gnu/json/57.zst
@@ -118,7 +118,7 @@ The Worker is a thin host around the Zig WASM module.
 
 Setup and run:
 
-```/dev/null/zig-worker-dev.sh#L1-4
+```bash
 cd zig
 npm install
 npm run build:wasm
@@ -127,7 +127,7 @@ npm run dev
 
 Deploy:
 
-```/dev/null/zig-worker-deploy.sh#L1-1
+```bash
 npm run deploy
 ```
 
@@ -142,7 +142,7 @@ GET /?spec=<spec>&target=<triple>
 
 Examples:
 
-```/dev/null/zig-worker-curl.sh#L1-4
+```bash
 curl localhost:8787/serde
 curl localhost:8787/tokio@1.52.1::sync::Mutex
 curl 'localhost:8787/tokio::sync::Mutex?target=x86_64-unknown-linux-gnu'
@@ -186,7 +186,7 @@ That lets the comparison harness swap Rust and Zig artifacts with the same host-
 
 Use the repo-level comparison flow from the repository root:
 
-```/dev/null/wasm-compare.sh#L1-2
+```bash
 ./wasm/build.sh
 cargo run -p md-docrs-wasm-compare -- --offline
 ```

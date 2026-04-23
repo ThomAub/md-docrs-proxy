@@ -20,7 +20,7 @@ The comparison binary lives in `crates/md-docrs-wasm-compare`.
 
 From the repo root:
 
-```/dev/null/wasm-compare.sh#L1-2
+```bash
 ./wasm/build.sh
 cargo run -p md-docrs-wasm-compare -- --offline
 ```

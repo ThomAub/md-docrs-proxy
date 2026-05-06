@@ -1,10 +1,15 @@
 name = "md-docrs-worker"
 main = "build/index.js"
 compatibility_date = "2025-04-21"
+account_id = "70782ad1f3d445be5602b2d4c08f6303"
+routes = [
+  { pattern = "md-docrs.workedonmymachine.com", custom_domain = true },
+]
 
 [[kv_namespaces]]
 binding = "KRATE_KV"
-id = "KRATE_KV"
+id = "10f0ecf4bc0a43d0a563c32ef868eb7c"
+preview_id = "6e1a1a0ab6a34aa589b8d9935d61c912"
 
 [build]
 command = "cargo install \"worker-build@^0.8\" && worker-build --release"

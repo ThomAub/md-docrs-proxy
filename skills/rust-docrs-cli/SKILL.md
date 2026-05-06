@@ -1,5 +1,5 @@
 ---
-name: Rust docs.rs CLI
+name: rust-docrs-cli
 description: Use this skill when you need to retrieve or summarize Rust crate or item documentation from docs.rs with the `md-docrs` CLI. Use it for crate-root lookups, item lookups, versioned lookups, target-specific lookups, and for forming the correct command. Do NOT use it for general Rust programming help, source-code editing, deployment, server workflows, Zig, WASM, or unrelated Cargo tasks.
 ---
 

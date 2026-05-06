@@ -61,6 +61,14 @@ test-worker:
     echo
     just curl-worker-target "tokio::sync::Mutex" "x86_64-unknown-linux-gnu"
 
+# Launch MCP Inspector against the hosted md-docrs Worker adapter.
+mcp-inspector-remote:
+    npx @modelcontextprotocol/inspector uv run --with mcp python mcp/md_docrs_remote.py
+
+# Smoke-test the hosted md-docrs Worker adapter without opening MCP Inspector.
+mcp-remote-smoke spec="anyhow::Error":
+    uv run --with mcp python mcp/md_docrs_remote.py --smoke {{ spec }}
+
 # Run the native Markdown server locally.
 server-dev:
     cargo run -p md-docrs-server -- --port 8080 --bind 127.0.0.1
@@ -86,6 +94,8 @@ help-commands:
     @echo "  cargo run -p md-docrs-cli -- anyhow"
     @echo "  cargo run -p md-docrs-cli -- --target x86_64-unknown-linux-gnu tokio::sync::Mutex"
     @echo "  cargo run -p md-docrs-server -- --port 8080 --bind 127.0.0.1"
+    @echo "  just mcp-inspector-remote"
+    @echo "  just mcp-remote-smoke anyhow::Error"
     @echo "  dist plan --tag v0.1.0"
     @echo "  dist build --tag v0.1.0"
     @echo "  cargo release 0.2.0"
